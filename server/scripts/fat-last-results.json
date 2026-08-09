@@ -1,0 +1,364 @@
+{
+  "at": "2026-08-06T14:28:03.765Z",
+  "counts": {
+    "PASS": 41,
+    "WARN": 18,
+    "FAIL": 0
+  },
+  "results": [
+    {
+      "status": "WARN",
+      "area": "AUTH",
+      "name": "Invalid password",
+      "note": "rate-limited (limiter working); skipped this attempt"
+    },
+    {
+      "status": "WARN",
+      "area": "AUTH",
+      "name": "Login",
+      "note": "rate-limited — continued with signed JWT (limiter confirmed earlier)"
+    },
+    {
+      "status": "PASS",
+      "area": "AUTH",
+      "name": "Admin session /me",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "AUTH",
+      "name": "Unauthorized without token",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "AUTH",
+      "name": "Invalid token rejected",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "AUTH",
+      "name": "Admin can create agent",
+      "note": ""
+    },
+    {
+      "status": "WARN",
+      "area": "AUTH",
+      "name": "Agent login",
+      "note": "rate-limited — used signed JWT"
+    },
+    {
+      "status": "PASS",
+      "area": "AUTH",
+      "name": "Agent blocked from creating users",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "AUTH",
+      "name": "Agent blocked from creating campaigns",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "AUTH",
+      "name": "Agent blocked from detailed health",
+      "note": ""
+    },
+    {
+      "status": "WARN",
+      "area": "AUTH",
+      "name": "Session expiration",
+      "note": "JWT expires claim present — not live-waited"
+    },
+    {
+      "status": "PASS",
+      "area": "AUTH",
+      "name": "Logout",
+      "note": ""
+    },
+    {
+      "status": "WARN",
+      "area": "AUTH",
+      "name": "Re-login after logout",
+      "note": "rate-limited — reminted JWT for remaining FAT"
+    },
+    {
+      "status": "PASS",
+      "area": "SECURITY",
+      "name": "Helmet headers present",
+      "note": "x-content-type-options=nosniff"
+    },
+    {
+      "status": "PASS",
+      "area": "SECURITY",
+      "name": "Public /uploads blocked",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "SECURITY",
+      "name": "Unsigned media rejected",
+      "note": ""
+    },
+    {
+      "status": "WARN",
+      "area": "SECURITY",
+      "name": "Webhook Signature",
+      "note": "WHATSAPP_APP_SECRET not set — HMAC disabled in development"
+    },
+    {
+      "status": "PASS",
+      "area": "SECURITY",
+      "name": "Input validation (zod settings)",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "SECURITY",
+      "name": "Rate limit on login",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "DATABASE",
+      "name": "Prisma migrations applied",
+      "note": "20260806180000_production_hardening, 20260806160000_kadina_launch, 20260804240000_add_integrations_and_channels, 20260804230000_add_analytics_fields, 20260804220000_add_ai_layer"
+    },
+    {
+      "status": "PASS",
+      "area": "DATABASE",
+      "name": "No duplicate waMessageId",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "DATABASE",
+      "name": "Indexes present",
+      "note": "18 indexes sampled"
+    },
+    {
+      "status": "PASS",
+      "area": "INBOX",
+      "name": "List + pagination",
+      "note": "items=2"
+    },
+    {
+      "status": "PASS",
+      "area": "INBOX",
+      "name": "Mark Read",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "INBOX",
+      "name": "Pin",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "INBOX",
+      "name": "Archive",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "INBOX",
+      "name": "Search",
+      "note": "items=1"
+    },
+    {
+      "status": "PASS",
+      "area": "INBOX",
+      "name": "Notes create",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "INBOX",
+      "name": "Tags",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "INBOX",
+      "name": "CRM update",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "INBOX",
+      "name": "Take Over",
+      "note": ""
+    },
+    {
+      "status": "WARN",
+      "area": "WHATSAPP",
+      "name": "Send Text",
+      "note": "Authentication Error"
+    },
+    {
+      "status": "WARN",
+      "area": "WHATSAPP",
+      "name": "Quoted Reply",
+      "note": "Authentication Error"
+    },
+    {
+      "status": "WARN",
+      "area": "WHATSAPP",
+      "name": "Buttons",
+      "note": "Authentication Error"
+    },
+    {
+      "status": "PASS",
+      "area": "WHATSAPP",
+      "name": "Templates list",
+      "note": "count=0"
+    },
+    {
+      "status": "WARN",
+      "area": "WHATSAPP",
+      "name": "Send Template",
+      "note": "no APPROVED template in DB"
+    },
+    {
+      "status": "WARN",
+      "area": "INBOX",
+      "name": "Retry Failed",
+      "note": "Authentication Error"
+    },
+    {
+      "status": "PASS",
+      "area": "WHATSAPP",
+      "name": "Inbound Text",
+      "note": "type=text"
+    },
+    {
+      "status": "PASS",
+      "area": "WHATSAPP",
+      "name": "Inbound Location",
+      "note": "type=location"
+    },
+    {
+      "status": "PASS",
+      "area": "WHATSAPP",
+      "name": "Inbound Contact",
+      "note": "type=contacts"
+    },
+    {
+      "status": "PASS",
+      "area": "WHATSAPP",
+      "name": "Inbound Sticker",
+      "note": "type=sticker"
+    },
+    {
+      "status": "PASS",
+      "area": "WHATSAPP",
+      "name": "Inbound Reaction",
+      "note": "type=reaction"
+    },
+    {
+      "status": "PASS",
+      "area": "WHATSAPP",
+      "name": "Inbound Interactive",
+      "note": "type=interactive"
+    },
+    {
+      "status": "WARN",
+      "area": "WHATSAPP",
+      "name": "Image/Video/Audio/Voice/PDF live media",
+      "note": "Inbound media download requires real Meta media IDs — covered by UI path + prior live usage; not re-sent in FAT"
+    },
+    {
+      "status": "WARN",
+      "area": "WHATSAPP",
+      "name": "Message Status",
+      "note": "no waMessageId on outbound"
+    },
+    {
+      "status": "PASS",
+      "area": "SOCKET",
+      "name": "Connect with JWT",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "SOCKET",
+      "name": "Typing + Presence emit",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "SOCKET",
+      "name": "Second connection allowed (multi-tab)",
+      "note": ""
+    },
+    {
+      "status": "WARN",
+      "area": "SOCKET",
+      "name": "Reconnect / no duplicate events",
+      "note": "Client singleton socket verified in code review; live reconnect not force-tested"
+    },
+    {
+      "status": "PASS",
+      "area": "SETTINGS",
+      "name": "Load settings",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "SETTINGS",
+      "name": "Business Hours / Welcome / Away save",
+      "note": ""
+    },
+    {
+      "status": "WARN",
+      "area": "CAMPAIGNS",
+      "name": "Create/Send",
+      "note": "missing contact list or template — create one in UI first"
+    },
+    {
+      "status": "PASS",
+      "area": "BACKUP",
+      "name": "Backup script",
+      "note": ""
+    },
+    {
+      "status": "WARN",
+      "area": "BACKUP",
+      "name": "Restore",
+      "note": "restore-json.js exists; full restore not executed against live DB (destructive)"
+    },
+    {
+      "status": "PASS",
+      "area": "LOGGING",
+      "name": "Health Dashboard API",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "LOGGING",
+      "name": "Audit Logs present",
+      "note": ""
+    },
+    {
+      "status": "PASS",
+      "area": "LOGGING",
+      "name": "Error Logs counter",
+      "note": ""
+    },
+    {
+      "status": "WARN",
+      "area": "PERFORMANCE",
+      "name": "Conversations query slow",
+      "note": "2538ms"
+    },
+    {
+      "status": "WARN",
+      "area": "PERFORMANCE",
+      "name": "Memory / Socket leak",
+      "note": "No long soak test in FAT — client singleton + server disconnect cleanup verified earlier"
+    }
+  ]
+}

@@ -1,0 +1,472 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Contact {
+  id                    String              @id @default(cuid())
+  phone                 String
+  name                  String?
+  channel               String              @default("whatsapp")
+  channelUserId         String?
+  /// WhatsAppChannel id for whatsapp contacts; null for IG/Messenger.
+  whatsAppChannelId     String?
+  whatsAppChannel       WhatsAppChannel?    @relation(fields: [whatsAppChannelId], references: [id], onDelete: Restrict)
+  /// Uniqueness scope: WhatsAppChannel.id for WA, "_" for other platforms.
+  channelScope          String              @default("_")
+  optedOut              Boolean             @default(false)
+  // CRM: patient | lead | vip | blocked | general
+  crmStatus             String              @default("patient")
+  customNotes           String?
+  avatarUrl             String?
+  activeFlowExecutionId String?
+  // CRM: clinic-specific fields
+  doctor                String?
+  treatment             String?
+  visitCount            Int                 @default(0)
+  leadSource            String?
+  lastAppointmentAt     DateTime?
+  lastAgentId           String?
+  lastAgent             User?               @relation("ContactLastAgent", fields: [lastAgentId], references: [id])
+  lastMessageAt         DateTime            @default(now())
+  createdAt             DateTime            @default(now())
+  messages              Message[]
+  conversation          Conversation?
+  lists                 ContactList[]       @relation("ContactListMembers")
+  campaignRecipients    CampaignRecipient[]
+  appointments          Appointment[]
+  timelineEvents        TimelineEvent[]
+
+  @@unique([channel, phone, channelScope])
+  @@index([channel, channelUserId])
+  @@index([whatsAppChannelId])
+  @@index([crmStatus])
+  @@index([lastAgentId])
+}
+
+/// Clinic WhatsApp Business phone numbers (max 5 enforced in app). Single-tenant Kadina.
+model WhatsAppChannel {
+  id                String         @id @default(cuid())
+  name              String
+  displayName       String
+  phoneNumber       String
+  phoneNumberId     String         @unique
+  /// Never expose in API responses or client state.
+  accessToken       String
+  businessAccountId String?
+  /// CONNECTED | DISCONNECTED | ERROR | PENDING
+  status            String         @default("PENDING")
+  isActive          Boolean        @default(true)
+  assignedUserId    String?
+  assignedUser      User?          @relation("WhatsAppChannelAssignedUser", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  lastWebhookAt     DateTime?
+  lastMessageAt     DateTime?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  contacts          Contact[]
+  conversations     Conversation[]
+  campaigns         Campaign[]
+
+  @@index([phoneNumber])
+  @@index([isActive])
+  @@index([status])
+  @@index([assignedUserId])
+}
+
+/// Unified Customer Timeline — customer-scoped history (not system AuditLog)
+model TimelineEvent {
+  id                String   @id @default(cuid())
+  contactId         String
+  contact           Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  conversationId    String?
+  eventType         String
+  title             String
+  description       String?
+  performedByUserId String?
+  performedByUser   User?    @relation("TimelinePerformedBy", fields: [performedByUserId], references: [id], onDelete: SetNull)
+  performedByName   String?
+  performedByRole   String?
+  // ADMIN | AGENT | AI | BOT | SYSTEM | AUTOMATION | CUSTOMER
+  actorType         String
+  metadata          String?
+  createdAt         DateTime @default(now())
+
+  @@index([contactId, createdAt])
+  @@index([contactId, eventType, createdAt])
+  @@index([conversationId, createdAt])
+  @@index([actorType])
+}
+
+model Message {
+  id                 String    @id @default(cuid())
+  contactId          String
+  contact            Contact   @relation(fields: [contactId], references: [id])
+  direction          String // "inbound" | "outbound"
+  type               String    @default("text")
+  content            String
+  status             String    @default("sent") // pending | sent | delivered | read | failed
+  waMessageId        String?
+  mediaUrl           String?
+  mediaMimeType      String?
+  caption            String?
+  sentByAi           Boolean   @default(false)
+  // Snapshot attribution (immutable at send time — survives later user renames)
+  createdByUserId    String?
+  createdByUser      User?     @relation("MessageCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdByName      String?
+  createdByRole      String?
+  createdByAvatar    String?
+  // ADMIN | AGENT | AI | SYSTEM | AUTOMATION | BOT
+  senderType         String?
+  replyToMessageId   String?
+  replyToWaMessageId String?
+  // JSON extras: location, contacts, interactive, reaction, sticker
+  metaPayload        String?
+  errorMessage       String?
+  // Local-only flags (not synced to WhatsApp)
+  pinned             Boolean   @default(false)
+  starred            Boolean   @default(false)
+  deletedAt          DateTime?
+  createdAt          DateTime  @default(now())
+
+  @@index([contactId, createdAt])
+  @@index([createdByUserId])
+  @@index([senderType])
+  // Inbound idempotency: a given platform message id must be stored once.
+  // Postgres unique constraints allow multiple NULLs, so this is effectively
+  // a "unique where not null" guarantee for waMessageId.
+  @@unique([waMessageId])
+}
+
+model User {
+  id                    String         @id @default(cuid())
+  name                  String
+  email                 String         @unique
+  passwordHash          String         @default("")
+  role                  String         @default("agent") // "admin" | "agent"
+  avatarUrl             String?
+  createdAt             DateTime       @default(now())
+  assignedConversations Conversation[] @relation("ConversationAssignedTo")
+  assignedByMe          Conversation[] @relation("ConversationAssignedBy")
+  lockedConversations   Conversation[] @relation("ConversationLockedBy")
+  notes                 Note[]
+  auditLogs             AuditLog[]
+  loginHistory          LoginHistory[]
+  contactsAsLastAgent   Contact[]      @relation("ContactLastAgent")
+  appointments          Appointment[]
+  messagesCreated       Message[]      @relation("MessageCreatedBy")
+  timelineEvents        TimelineEvent[] @relation("TimelinePerformedBy")
+  assignedChannels      WhatsAppChannel[] @relation("WhatsAppChannelAssignedUser")
+}
+
+model Conversation {
+  id               String    @id @default(cuid())
+  contactId        String    @unique
+  contact          Contact   @relation(fields: [contactId], references: [id])
+  /// WhatsApp clinic number used for this thread (required after multi-WA migration).
+  channelId        String
+  channel          WhatsAppChannel @relation(fields: [channelId], references: [id], onDelete: Restrict)
+  status           String    @default("open") // "open" | "pending" | "closed"
+  assignedToId     String?
+  assignedTo       User?     @relation("ConversationAssignedTo", fields: [assignedToId], references: [id])
+  assignedAt       DateTime?
+  assignedByUserId String?
+  assignedBy       User?     @relation("ConversationAssignedBy", fields: [assignedByUserId], references: [id])
+  tags             Tag[]     @relation("ConversationTags")
+  notes            Note[]
+  pinned           Boolean   @default(false)
+  archived         Boolean   @default(false)
+  unreadCount      Int       @default(0)
+  lastReadAt       DateTime?
+  // Soft lock so two agents don't reply at the same time
+  lockedById       String?
+  lockedBy         User?     @relation("ConversationLockedBy", fields: [lockedById], references: [id])
+  lockedAt         DateTime?
+  lastMessageAt    DateTime  @default(now())
+  firstResponseAt  DateTime?
+  createdAt        DateTime  @default(now())
+
+  @@index([status])
+  @@index([assignedToId])
+  @@index([assignedByUserId])
+  @@index([lastMessageAt])
+  @@index([pinned, archived])
+  @@index([lockedById])
+  @@index([channelId])
+}
+
+model Tag {
+  id            String         @id @default(cuid())
+  name          String         @unique
+  color         String         @default("#3B82F6")
+  conversations Conversation[] @relation("ConversationTags")
+}
+
+model Note {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  authorId       String
+  author         User         @relation(fields: [authorId], references: [id])
+  content        String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([conversationId, createdAt])
+}
+
+model Template {
+  id             String     @id @default(cuid())
+  name           String     @unique
+  category       String
+  language       String     @default("ar")
+  bodyText       String
+  status         String     @default("pending")
+  metaTemplateId String?
+  createdAt      DateTime   @default(now())
+  campaigns      Campaign[]
+}
+
+model ContactList {
+  id        String     @id @default(cuid())
+  name      String
+  createdAt DateTime   @default(now())
+  contacts  Contact[]  @relation("ContactListMembers")
+  campaigns Campaign[]
+}
+
+model Campaign {
+  id            String              @id @default(cuid())
+  name          String
+  templateId    String
+  template      Template            @relation(fields: [templateId], references: [id])
+  contactListId String
+  contactList   ContactList         @relation(fields: [contactListId], references: [id])
+  channelId     String
+  channel       WhatsAppChannel     @relation(fields: [channelId], references: [id], onDelete: Restrict)
+  status        String              @default("draft")
+  scheduledAt   DateTime?
+  createdAt     DateTime            @default(now())
+  recipients    CampaignRecipient[]
+
+  @@index([status])
+  @@index([channelId])
+}
+
+model CampaignRecipient {
+  id           String    @id @default(cuid())
+  campaignId   String
+  campaign     Campaign  @relation(fields: [campaignId], references: [id])
+  contactId    String
+  contact      Contact   @relation(fields: [contactId], references: [id])
+  status       String    @default("pending")
+  waMessageId  String?
+  errorMessage String?
+  sentAt       DateTime?
+
+  @@index([campaignId, status])
+  @@index([waMessageId])
+  @@unique([campaignId, contactId])
+}
+
+model Flow {
+  id           String     @id @default(cuid())
+  name         String
+  isActive     Boolean    @default(true)
+  triggerType  String
+  triggerValue String?
+  steps        FlowStep[]
+  createdAt    DateTime   @default(now())
+
+  @@index([isActive, triggerType])
+}
+
+model FlowStep {
+  id          String   @id @default(cuid())
+  flowId      String
+  flow        Flow     @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  order       Int
+  actionType  String
+  actionValue String
+  createdAt   DateTime @default(now())
+
+  @@index([flowId, order])
+}
+
+model FlowExecution {
+  id          String    @id @default(cuid())
+  flowId      String
+  contactId   String
+  currentStep Int       @default(0)
+  status      String    @default("running")
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  @@index([contactId, status])
+  @@index([flowId])
+}
+
+model KnowledgeDocument {
+  id        String           @id @default(cuid())
+  title     String
+  content   String
+  createdAt DateTime         @default(now())
+  chunks    KnowledgeChunk[]
+}
+
+model KnowledgeChunk {
+  id         String            @id @default(cuid())
+  documentId String
+  document   KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  content    String
+  embedding  Bytes
+  createdAt  DateTime          @default(now())
+
+  @@index([documentId])
+}
+
+model AiAgentSettings {
+  id                  String  @id @default(cuid())
+  isActive            Boolean @default(false)
+  systemPrompt        String  @default("أنت مساعد دعم عملاء محترف. أجب فقط من سياق قاعدة المعرفة المرفق. إن لم تجد إجابة واضحة، قل إنك ستحوّل المحادثة لموظف.")
+  confidenceThreshold Float   @default(0.7)
+  handoffKeywords     String  @default("موظف,انسان,تحدث مع شخص,human,agent")
+}
+
+model WebhookSubscription {
+  id        String   @id @default(cuid())
+  url       String
+  events    String
+  isActive  Boolean  @default(true)
+  secret    String
+  createdAt DateTime @default(now())
+}
+
+model ClinicSettings {
+  id                     String  @id @default(cuid())
+  clinicName             String  @default("عيادة كادينا")
+  timezone               String  @default("Asia/Aden")
+  language               String  @default("ar")
+  // JSON: { days: number[], start: "09:00", end: "17:00" }
+  businessHoursJson      String  @default("{\"days\":[0,1,2,3,4],\"start\":\"09:00\",\"end\":\"17:00\"}")
+  welcomeMessage         String  @default("مرحبًا بك في عيادة كادينا. كيف يمكننا مساعدتك؟")
+  awayMessage            String  @default("شكرًا لتواصلك. نحن خارج أوقات العمل وسنرد عليك في أقرب وقت.")
+  welcomeEnabled         Boolean @default(true)
+  awayEnabled            Boolean @default(true)
+  // Optional overrides for WhatsApp credentials (fallback to .env)
+  whatsappAccessToken    String?
+  whatsappPhoneNumberId  String?
+  whatsappBusinessAccountId String?
+  whatsappVerifyToken    String?
+  updatedAt              DateTime @updatedAt
+}
+
+/// System-wide Audit Center trail (who / what / when / result) — separate from Customer Timeline
+model AuditLog {
+  id              String   @id @default(cuid())
+  actorId         String?
+  actor           User?    @relation(fields: [actorId], references: [id])
+  // Snapshot of actor at write time (survives rename)
+  performedByName String?
+  performedByRole String?
+  // ADMIN | AGENT | SYSTEM | BOT | AI | AUTOMATION
+  actorType       String?
+  action          String
+  entityType      String
+  entityId        String?
+  ipAddress       String?
+  userAgent       String?
+  requestId       String?
+  // SUCCESS | FAILED | WARNING
+  status          String   @default("SUCCESS")
+  oldValues       String?
+  newValues       String?
+  // Structured extras (preferred). `meta` kept for legacy rows/callers.
+  metadata        String?
+  meta            String?
+  createdAt       DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+  @@index([status, createdAt])
+  @@index([createdAt])
+  @@index([requestId])
+}
+
+/// Successful login records (security / support visibility)
+model LoginHistory {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  ip        String?
+  userAgent String?
+  success   Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model Appointment {
+  id              String    @id @default(cuid())
+  contactId       String
+  contact         Contact   @relation(fields: [contactId], references: [id])
+  agentId         String?
+  agent           User?     @relation(fields: [agentId], references: [id])
+  title           String
+  notes           String?
+  scheduledAt     DateTime
+  durationMinutes Int       @default(30)
+  status          String    @default("scheduled") // scheduled | completed | cancelled | no_show
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([contactId, scheduledAt])
+  @@index([status])
+  @@index([agentId])
+}
+
+/// Durable delayed-job queue (survives process restarts), e.g. scheduled campaign sends.
+model ScheduledJob {
+  id          String   @id @default(cuid())
+  type        String
+  runAt       DateTime
+  payloadJson String
+  status      String   @default("pending") // pending | done | failed
+  attempts    Int      @default(0)
+  lastError   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([status, runAt])
+  @@index([type])
+}
+
+/// Unstructured error log for background jobs, webhook processing, etc.
+model SystemError {
+  id        String   @id @default(cuid())
+  source    String
+  message   String
+  stack     String?
+  meta      String?
+  createdAt DateTime @default(now())
+
+  @@index([source, createdAt])
+}
+
+/// Messages/events that failed processing beyond retry limits.
+model DeadLetterMessage {
+  id           String   @id @default(cuid())
+  originalType String
+  payloadJson  String
+  errorMessage String
+  retryCount   Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([originalType])
+}
