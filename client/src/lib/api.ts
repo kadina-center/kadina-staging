@@ -95,6 +95,7 @@ export type Message = {
   metaPayload?: string | null;
   errorMessage?: string | null;
   deletedAt?: string | null;
+  editedAt?: string | null;
   createdAt: string;
 };
 
@@ -578,6 +579,24 @@ export function sendMessage(
 export function retryMessage(messageId: string): Promise<Message> {
   return request<Message>(`/messages/${messageId}/retry`, {
     method: "POST",
+  });
+}
+
+/** Local inbox edit — does not change the message on WhatsApp. */
+export function editMessage(
+  messageId: string,
+  content: string
+): Promise<Message> {
+  return request<Message>(`/messages/${messageId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ content }),
+  });
+}
+
+/** Local soft-delete — hides the message in Kadina only. */
+export function deleteMessage(messageId: string): Promise<Message> {
+  return request<Message>(`/messages/${messageId}`, {
+    method: "DELETE",
   });
 }
 

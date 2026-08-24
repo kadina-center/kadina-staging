@@ -131,6 +131,7 @@ model Message {
   pinned             Boolean   @default(false)
   starred            Boolean   @default(false)
   deletedAt          DateTime?
+  editedAt           DateTime?
   createdAt          DateTime  @default(now())
 
   @@index([contactId, createdAt])

@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   useSocket,
+  type MessageDeletedEvent,
   type MessageStatusEvent,
+  type MessageUpdatedEvent,
   type NewMessageEvent,
   type PresenceUpdateEvent,
 } from "../hooks/useSocket";
 import {
+  deleteMessage,
+  editMessage,
   formatReplyTime,
   getMessagesPage,
   isApiError,
@@ -242,6 +246,9 @@ function MessageBody({ message }: { message: Message }) {
           {message.content}
         </p>
       )}
+      {message.editedAt && (
+        <p className="text-[10px] text-inbox-muted">تم التعديل</p>
+      )}
       <MetaPayloadView raw={message.metaPayload} />
     </div>
   );
@@ -283,6 +290,9 @@ export default function ChatWindow({
   const [presence, setPresence] = useState<PresenceUpdateEvent | null>(null);
   const [takeOverBusy, setTakeOverBusy] = useState(false);
   const [detailsId, setDetailsId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const contactId = conversation?.contactId ?? null;
   const conversationId = conversation?.id ?? null;
@@ -364,6 +374,25 @@ export default function ChatWindow({
     [contactId]
   );
 
+  const handleMessageUpdated = useCallback(
+    (payload: MessageUpdatedEvent) => {
+      if (!contactId || payload.message.contactId !== contactId) return;
+      setMessages((prev) => upsertMessage(prev, payload.message));
+    },
+    [contactId]
+  );
+
+  const handleMessageDeleted = useCallback(
+    (payload: MessageDeletedEvent) => {
+      if (!contactId || payload.contactId !== contactId) return;
+      setMessages((prev) => prev.filter((m) => m.id !== payload.messageId));
+      setEditingId((id) => (id === payload.messageId ? null : id));
+      setReplyTo((m) => (m?.id === payload.messageId ? null : m));
+      setDetailsId((id) => (id === payload.messageId ? null : id));
+    },
+    [contactId]
+  );
+
   const handlePresenceUpdate = useCallback(
     (payload: PresenceUpdateEvent) => {
       if (!conversationId || payload.conversationId !== conversationId) return;
@@ -375,6 +404,8 @@ export default function ChatWindow({
   const { viewConversation, unview, typingStart, typingStop } = useSocket({
     onNewMessage: handleNewMessage,
     onMessageStatus: handleMessageStatus,
+    onMessageUpdated: handleMessageUpdated,
+    onMessageDeleted: handleMessageDeleted,
     onPresenceUpdate: handlePresenceUpdate,
   });
 
@@ -439,6 +470,56 @@ export default function ChatWindow({
       applyOutboundResult(err.messagePayload);
     }
     setError(err instanceof Error ? err.message : fallback);
+  }
+
+  function startEdit(message: Message) {
+    if (message.type !== "text" || message.direction !== "outbound") return;
+    setEditingId(message.id);
+    setEditDraft(message.content || "");
+    setDetailsId(null);
+  }
+
+  async function saveEdit(messageId: string) {
+    const content = editDraft.trim();
+    if (!content) {
+      setError("نص الرسالة مطلوب");
+      return;
+    }
+    setActionBusy(messageId);
+    setError(null);
+    try {
+      const saved = await editMessage(messageId, content);
+      setMessages((prev) => upsertMessage(prev, saved));
+      setEditingId(null);
+      setEditDraft("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "فشل تعديل الرسالة");
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function handleDelete(messageId: string) {
+    if (
+      !window.confirm(
+        "حذف الرسالة من صندوق Kadina فقط؟\nلن تُحذف من واتساب لدى العميل."
+      )
+    ) {
+      return;
+    }
+    setActionBusy(messageId);
+    setError(null);
+    try {
+      await deleteMessage(messageId);
+      setMessages((prev) => prev.filter((m) => m.id !== messageId));
+      setEditingId((id) => (id === messageId ? null : id));
+      setReplyTo((m) => (m?.id === messageId ? null : m));
+      setDetailsId((id) => (id === messageId ? null : id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "فشل حذف الرسالة");
+    } finally {
+      setActionBusy(null);
+    }
   }
 
   async function handleSend(text: string, replyToMessageId?: string) {
@@ -608,10 +689,14 @@ export default function ChatWindow({
             senderType === "SYSTEM" ||
             (!!message.sentByAi && !message.createdByUserId);
           const showDetails = detailsId === message.id;
+          const isEditing = editingId === message.id;
+          const canEdit =
+            outbound && message.type === "text" && !message.deletedAt;
+          const busy = actionBusy === message.id;
           return (
             <div
               key={message.id}
-              className={`flex ${outbound ? "justify-start" : "justify-end"}`}
+              className={`group flex ${outbound ? "justify-start" : "justify-end"}`}
             >
               <div className="relative max-w-[min(75%,36rem)] min-w-0">
                 {outbound && showSender && (
@@ -646,6 +731,82 @@ export default function ChatWindow({
                     </p>
                   </div>
                 )}
+
+              <div
+                className={`absolute top-0 z-10 flex gap-1 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100 ${
+                  outbound ? "left-full ms-1" : "right-full me-1"
+                }`}
+              >
+                {canEdit && !isEditing && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    title="تعديل في الصندوق فقط"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      startEdit(message);
+                    }}
+                    className="rounded-md border border-inbox-border bg-inbox-panel px-1.5 py-0.5 text-[10px] text-inbox-text disabled:opacity-50"
+                  >
+                    تعديل
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={busy}
+                  title="حذف من الصندوق فقط"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleDelete(message.id);
+                  }}
+                  className="rounded-md border border-red-500/30 bg-inbox-panel px-1.5 py-0.5 text-[10px] text-red-300 disabled:opacity-50"
+                >
+                  حذف
+                </button>
+              </div>
+
+              {isEditing ? (
+                <div
+                  className={`w-full min-w-0 space-y-2 overflow-hidden rounded-lg px-3 py-2 shadow-sm ${
+                    outbound
+                      ? "rounded-tr-sm bg-inbox-outbound"
+                      : "rounded-tl-sm bg-inbox-inbound"
+                  }`}
+                >
+                  <textarea
+                    value={editDraft}
+                    onChange={(e) => setEditDraft(e.target.value)}
+                    rows={3}
+                    disabled={busy}
+                    className="w-full resize-y rounded-md border border-inbox-border bg-black/20 px-2 py-1.5 text-sm text-inbox-text outline-none focus:border-inbox-accent"
+                    dir="auto"
+                  />
+                  <p className="text-[10px] text-inbox-muted">
+                    التعديل يظهر في Kadina فقط — لن يتغيّر على واتساب لدى العميل.
+                  </p>
+                  <div className="flex justify-end gap-1.5">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        setEditingId(null);
+                        setEditDraft("");
+                      }}
+                      className="rounded-md bg-inbox-hover px-2 py-1 text-[11px] disabled:opacity-50"
+                    >
+                      إلغاء
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || !editDraft.trim()}
+                      onClick={() => void saveEdit(message.id)}
+                      className="rounded-md bg-inbox-accent px-2 py-1 text-[11px] text-white disabled:opacity-50"
+                    >
+                      {busy ? "..." : "حفظ"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
               <button
                 type="button"
                 onClick={() => {
@@ -653,12 +814,6 @@ export default function ChatWindow({
                   setDetailsId((id) =>
                     id === message.id ? null : message.id
                   );
-                }}
-                onMouseEnter={() => {
-                  if (outbound) setDetailsId(message.id);
-                }}
-                onMouseLeave={() => {
-                  setDetailsId((id) => (id === message.id ? null : id));
                 }}
                 className={`w-full min-w-0 overflow-hidden rounded-lg px-3 py-2 text-right shadow-sm ${
                   outbound
@@ -728,7 +883,8 @@ export default function ChatWindow({
                   </div>
                 )}
               </button>
-              {showDetails && outbound && (
+              )}
+              {showDetails && outbound && !isEditing && (
                 <div className="absolute top-full z-20 mt-1 w-56 rounded-lg border border-inbox-border bg-inbox-panel p-2 text-[11px] text-inbox-muted shadow-lg">
                   <p>
                     <span className="text-inbox-text">أُرسلت بواسطة:</span>{" "}
@@ -751,7 +907,8 @@ export default function ChatWindow({
                     <span dir="ltr">{formatReplyTime(message.createdAt)}</span>
                   </p>
                   <p>
-                    <span className="text-inbox-text">معدّلة:</span> لا
+                    <span className="text-inbox-text">معدّلة:</span>{" "}
+                    {message.editedAt ? "نعم" : "لا"}
                   </p>
                   <p>
                     <span className="text-inbox-text">محذوفة:</span>{" "}

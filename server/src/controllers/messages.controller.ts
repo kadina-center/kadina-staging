@@ -28,6 +28,8 @@ import {
 } from "../services/timeline.service";
 import {
   emitConversationUpdated,
+  emitMessageDeleted,
+  emitMessageUpdated,
   emitNewMessage,
 } from "../services/socket.service";
 import {
@@ -1072,6 +1074,11 @@ export async function softDeleteMessage(
 
     if (!(await assertCanAccessContact(req, res, existing.contactId))) return;
 
+    if (existing.deletedAt) {
+      res.json(existing);
+      return;
+    }
+
     const message = await prisma.message.update({
       where: { id: messageId },
       data: { deletedAt: new Date() },
@@ -1089,12 +1096,103 @@ export async function softDeleteMessage(
         originalCreatedByUserId: existing.createdByUserId,
         originalCreatedByName: existing.createdByName,
         originalSenderType: existing.senderType,
+        localOnly: true,
       },
     });
 
-    res.json(message);
+    emitMessageDeleted({
+      messageId: message.id,
+      contactId: message.contactId,
+    });
+
+    res.json({ ...message, ...messageAttributionFields(message) });
   } catch (error) {
     console.error("[messages] delete error:", error);
     res.status(500).json({ error: "Failed to delete message" });
+  }
+}
+
+const MAX_EDIT_CONTENT = 4096;
+
+/**
+ * Local inbox edit only — WhatsApp Cloud API does not support editing sent messages.
+ */
+export async function editMessage(req: Request, res: Response): Promise<void> {
+  try {
+    const { messageId } = req.params;
+    const body = req.body as { content?: string };
+    const content =
+      typeof body.content === "string" ? body.content.trim() : "";
+
+    if (!content) {
+      res.status(400).json({ error: "content is required" });
+      return;
+    }
+    if (content.length > MAX_EDIT_CONTENT) {
+      res.status(400).json({
+        error: `content exceeds ${MAX_EDIT_CONTENT} characters`,
+      });
+      return;
+    }
+
+    const existing = await prisma.message.findUnique({
+      where: { id: messageId },
+    });
+    if (!existing) {
+      res.status(404).json({ error: "Message not found" });
+      return;
+    }
+
+    if (!(await assertCanAccessContact(req, res, existing.contactId))) return;
+
+    if (existing.deletedAt) {
+      res.status(400).json({ error: "Cannot edit a deleted message" });
+      return;
+    }
+
+    if (existing.type !== "text") {
+      res.status(400).json({
+        error: "Only text messages can be edited in the inbox",
+      });
+      return;
+    }
+
+    if (existing.direction !== "outbound") {
+      res.status(400).json({
+        error: "Only outbound messages can be edited",
+      });
+      return;
+    }
+
+    if (existing.content === content) {
+      res.json({ ...existing, ...messageAttributionFields(existing) });
+      return;
+    }
+
+    const message = await prisma.message.update({
+      where: { id: messageId },
+      data: { content, editedAt: new Date() },
+    });
+
+    logAuditFromRequest(req, {
+      action: AuditAction.UPDATE,
+      entityType: AuditEntity.MESSAGE,
+      entityId: messageId,
+      oldValues: { content: existing.content, editedAt: existing.editedAt },
+      newValues: { content: message.content, editedAt: message.editedAt },
+      metadata: {
+        messageId,
+        contactId: existing.contactId,
+        localOnly: true,
+      },
+    });
+
+    const payload = { ...message, ...messageAttributionFields(message) };
+    emitMessageUpdated({ message: payload });
+
+    res.json(payload);
+  } catch (error) {
+    console.error("[messages] edit error:", error);
+    res.status(500).json({ error: "Failed to edit message" });
   }
 }

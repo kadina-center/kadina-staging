@@ -41,6 +41,8 @@ export type NewMessagePayload = {
     replyToWaMessageId?: string | null;
     metaPayload?: string | null;
     errorMessage?: string | null;
+    deletedAt?: Date | string | null;
+    editedAt?: Date | string | null;
     createdAt: Date | string;
   };
   contact: {
@@ -271,6 +273,36 @@ export function emitMessageStatus(payload: {
   }
   // No contact context — admins only (avoid leaking to all agents)
   io.to(adminRoom()).emit("message_status", payload);
+}
+
+/** Local inbox edit (not synced to WhatsApp). */
+export function emitMessageUpdated(
+  payload: { message: NewMessagePayload["message"] & { contactId: string } },
+  assignedToId?: string | null
+): void {
+  if (!io) return;
+  if (assignedToId !== undefined) {
+    emitToConversationAudience(assignedToId, "message_updated", payload);
+    return;
+  }
+  void resolveAssigneeByContact(payload.message.contactId).then((assignee) => {
+    emitToConversationAudience(assignee, "message_updated", payload);
+  });
+}
+
+/** Local soft-delete (not synced to WhatsApp). */
+export function emitMessageDeleted(
+  payload: { messageId: string; contactId: string },
+  assignedToId?: string | null
+): void {
+  if (!io) return;
+  if (assignedToId !== undefined) {
+    emitToConversationAudience(assignedToId, "message_deleted", payload);
+    return;
+  }
+  void resolveAssigneeByContact(payload.contactId).then((assignee) => {
+    emitToConversationAudience(assignee, "message_deleted", payload);
+  });
 }
 
 export function emitConversationUpdated(

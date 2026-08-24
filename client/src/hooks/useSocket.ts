@@ -27,6 +27,15 @@ export type MessageStatusEvent = {
   contactId?: string;
 };
 
+export type MessageUpdatedEvent = {
+  message: Message;
+};
+
+export type MessageDeletedEvent = {
+  messageId: string;
+  contactId: string;
+};
+
 export type ConversationUpdatedEvent = Conversation;
 
 export type NoteAddedEvent = Note;
@@ -76,6 +85,8 @@ export type AuditEventSocket = {
 type UseSocketOptions = {
   onNewMessage?: (payload: NewMessageEvent) => void;
   onMessageStatus?: (payload: MessageStatusEvent) => void;
+  onMessageUpdated?: (payload: MessageUpdatedEvent) => void;
+  onMessageDeleted?: (payload: MessageDeletedEvent) => void;
   onConversationUpdated?: (payload: ConversationUpdatedEvent) => void;
   onNoteAdded?: (payload: NoteAddedEvent) => void;
   onCampaignProgress?: (payload: CampaignProgressEvent) => void;
@@ -87,6 +98,8 @@ type UseSocketOptions = {
 type HandlerBag = {
   onNewMessage?: (payload: NewMessageEvent) => void;
   onMessageStatus?: (payload: MessageStatusEvent) => void;
+  onMessageUpdated?: (payload: MessageUpdatedEvent) => void;
+  onMessageDeleted?: (payload: MessageDeletedEvent) => void;
   onConversationUpdated?: (payload: ConversationUpdatedEvent) => void;
   onNoteAdded?: (payload: NoteAddedEvent) => void;
   onCampaignProgress?: (payload: CampaignProgressEvent) => void;
@@ -133,6 +146,12 @@ function ensureSharedSocket(token: string): Socket {
   socket.on("message_status", (payload: MessageStatusEvent) => {
     subscribers.forEach((get) => get().onMessageStatus?.(payload));
   });
+  socket.on("message_updated", (payload: MessageUpdatedEvent) => {
+    subscribers.forEach((get) => get().onMessageUpdated?.(payload));
+  });
+  socket.on("message_deleted", (payload: MessageDeletedEvent) => {
+    subscribers.forEach((get) => get().onMessageDeleted?.(payload));
+  });
   socket.on("conversation_updated", (payload: ConversationUpdatedEvent) => {
     subscribers.forEach((get) => get().onConversationUpdated?.(payload));
   });
@@ -178,6 +197,8 @@ export function useSocket(options: UseSocketOptions = {}) {
       options.onNewMessage?.(payload);
     },
     onMessageStatus: options.onMessageStatus,
+    onMessageUpdated: options.onMessageUpdated,
+    onMessageDeleted: options.onMessageDeleted,
     onConversationUpdated: options.onConversationUpdated,
     onNoteAdded: options.onNoteAdded,
     onCampaignProgress: options.onCampaignProgress,

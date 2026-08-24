@@ -1,6 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
 import {
+  editMessage,
   pinMessage,
   retryFailedMessage,
   sendInteractive,
@@ -51,6 +52,7 @@ router.post("/interactive", sendInteractive);
 router.post("/:messageId/retry", retryFailedMessage);
 router.patch("/:messageId/pin", pinMessage);
 router.patch("/:messageId/star", starMessage);
+router.patch("/:messageId", editMessage);
 router.delete("/:messageId", softDeleteMessage);
 
 export default router;
