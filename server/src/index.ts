@@ -38,6 +38,11 @@ import { initSocket } from "./services/socket.service";
 
 const app = express();
 
+// Railway (and similar hosts) terminate TLS at a reverse proxy and send
+// X-Forwarded-For. express-rate-limit requires trust proxy so client IPs
+// are derived correctly (avoids ERR_ERL_UNEXPECTED_X_FORWARDED_FOR).
+app.set("trust proxy", 1);
+
 if (!fs.existsSync(env.MEDIA_STORAGE_PATH)) {
   fs.mkdirSync(env.MEDIA_STORAGE_PATH, { recursive: true });
 }
