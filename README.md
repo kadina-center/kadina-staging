@@ -100,7 +100,6 @@ npm run dev
 | GET | `/flows/active/:contactId` | حالة التدفق النشط |
 | GET/POST/DELETE | `/knowledge` | قاعدة المعرفة (RAG) |
 | GET/PATCH | `/ai-settings` | إعدادات الوكيل الآلي |
-| POST | `/ai/copilot-suggestions` | اقتراحات Copilot فقط (بدون إرسال) |
 | GET | `/analytics/overview` | ملخص التحليلات (`?from=&to=`) |
 | GET | `/analytics/campaigns/:id` | أداء حملة واحدة |
 | GET | `/analytics/export` | تصدير CSV للمحادثات |

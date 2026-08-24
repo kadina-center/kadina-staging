@@ -50,7 +50,7 @@ export default function AiSettingsPage() {
       <div className="mb-6">
         <h1 className="text-2xl font-semibold">إعدادات الذكاء الاصطناعي</h1>
         <p className="mt-1 text-sm text-inbox-muted">
-          الوكيل الآلي يرد تلقائيًا؛ الـ Copilot يقترح فقط دون إرسال
+          الوكيل الآلي يرد تلقائيًا على الرسائل الواردة حسب قاعدة المعرفة
         </p>
       </div>
 

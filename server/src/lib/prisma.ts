@@ -6,7 +6,7 @@ const globalForPrisma = globalThis as unknown as {
 
 /**
  * Neon can drop idle connections. Default pool of 5 is too small once
- * inbox + sockets + copilot + flow polling compete — raises timeouts and
+ * inbox + sockets + flow polling compete — raises timeouts and
  * pool size (still modest for Neon free/dev).
  */
 function datasourceUrl(): string | undefined {

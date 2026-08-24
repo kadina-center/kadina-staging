@@ -1455,17 +1455,6 @@ export function updateAiSettings(
   });
 }
 
-/** Copilot only — never sends a WhatsApp message */
-export function getCopilotSuggestions(data: {
-  conversationId?: string;
-  contactId?: string;
-}): Promise<{ suggestions: string[] }> {
-  return request("/ai/copilot-suggestions", {
-    method: "POST",
-    body: JSON.stringify(data),
-  });
-}
-
 export type AnalyticsOverview = {
   range: { from: string; to: string };
   kpis: {

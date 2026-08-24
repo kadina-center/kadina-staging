@@ -270,41 +270,6 @@ async function main() {
     else fail("Agent contact-list detail 403", `http=${res.status}`);
   }
 
-  // ---------- AI IDOR ----------
-  console.log("-- AI IDOR --");
-  {
-    const { res } = await api("/ai/copilot-suggestions", {
-      token: ahmedToken,
-      method: "POST",
-      body: { conversationId: convA.id },
-    });
-    // 200 with suggestions or 500 if AI key missing — not 404/403
-    if (res.status !== 404 && res.status !== 403)
-      pass("Ahmed copilot own conversation", `http=${res.status}`);
-    else fail("Ahmed copilot own conversation", `http=${res.status}`);
-  }
-  {
-    const since = new Date();
-    const { res } = await api("/ai/copilot-suggestions", {
-      token: ahmedToken,
-      method: "POST",
-      body: { conversationId: convB.id },
-    });
-    if (res.status === 404) pass("Ahmed copilot Sara conversation 404");
-    else fail("Ahmed copilot Sara conversation 404", `http=${res.status}`);
-    const audit = await waitAudit(
-      {
-        actorId: ahmed.id,
-        entityId: convB.id,
-        status: "FAILED",
-      },
-      since
-    );
-    if (audit && (audit.metadata || "").includes("access_denied"))
-      pass("AI IDOR audited");
-    else fail("AI IDOR audited");
-  }
-
   // ---------- FLOW IDOR ----------
   console.log("-- FLOW IDOR --");
   {

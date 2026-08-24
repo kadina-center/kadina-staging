@@ -242,7 +242,7 @@ export async function matchKeywordFlow(
 }
 
 /**
- * Default AI agent reply path (not Copilot).
+ * Default AI agent reply path.
  * On low confidence / handoff keywords → pending + stop automation.
  */
 export async function runDefaultAiAgent(

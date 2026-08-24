@@ -34,7 +34,6 @@ import { MESSAGE_STATUS_LABELS, SENDER_TYPE_LABELS, labelOr } from "../lib/uiLab
 import ConversationHeader, {
   type LastRepliedBy,
 } from "./ConversationHeader";
-import CopilotPanel from "./CopilotPanel";
 import FlowTestBanner from "./FlowTestBanner";
 import MessageInput from "./MessageInput";
 
@@ -285,7 +284,6 @@ export default function ChatWindow({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<string | null>(null);
-  const [draftText, setDraftText] = useState<string | null>(null);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [presence, setPresence] = useState<PresenceUpdateEvent | null>(null);
   const [takeOverBusy, setTakeOverBusy] = useState(false);
@@ -923,18 +921,9 @@ export default function ChatWindow({
         <div ref={bottomRef} />
       </div>
 
-      <div className="max-h-28 shrink-0 overflow-y-auto">
-        <CopilotPanel
-          conversationId={conversation.id}
-          onPick={(text) => setDraftText(text)}
-        />
-      </div>
-
       <div className="shrink-0 border-t border-inbox-border bg-inbox-panel">
         <MessageInput
           lastInboundAt={lastInboundAt}
-          draftText={draftText}
-          onDraftConsumed={() => setDraftText(null)}
           replyTo={replyTo}
           onClearReply={() => setReplyTo(null)}
           onTypingStart={() => {

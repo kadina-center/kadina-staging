@@ -16,9 +16,6 @@ type Props = {
   disabled?: boolean;
   /** ISO date of last inbound customer message; used for 24h window check */
   lastInboundAt?: string | null;
-  /** Copilot fills the composer — never auto-sends */
-  draftText?: string | null;
-  onDraftConsumed?: () => void;
   replyTo?: Message | null;
   onClearReply?: () => void;
   onTypingStart?: () => void;
@@ -52,8 +49,6 @@ function extractParamCount(bodyText: string): number {
 export default function MessageInput({
   disabled,
   lastInboundAt,
-  draftText,
-  onDraftConsumed,
   replyTo,
   onClearReply,
   onTypingStart,
@@ -65,12 +60,6 @@ export default function MessageInput({
 }: Props) {
   const [text, setText] = useState("");
   const [caption, setCaption] = useState("");
-
-  useEffect(() => {
-    if (!draftText) return;
-    setText(draftText);
-    onDraftConsumed?.();
-  }, [draftText, onDraftConsumed]);
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [mode, setMode] = useState<"text" | "template">("text");

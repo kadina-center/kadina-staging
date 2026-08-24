@@ -116,7 +116,7 @@ Set in Railway (values from your Staging secrets manager — never commit them):
 
 | Variable | Notes |
 |----------|--------|
-| `ANTHROPIC_API_KEY` | AI Copilot |
+| `ANTHROPIC_API_KEY` | AI agent / flow auto-replies |
 | `ANTHROPIC_MODEL` | Optional model override |
 | `OPENAI_API_KEY` | Only if embeddings use OpenAI |
 | `MEDIA_STORAGE_PATH` | Default `./uploads` |
