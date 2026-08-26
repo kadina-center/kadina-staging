@@ -730,39 +730,6 @@ export default function ChatWindow({
                   </div>
                 )}
 
-              <div
-                className={`absolute top-0 z-10 flex gap-1 opacity-100 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100 ${
-                  outbound ? "left-full ms-1" : "right-full me-1"
-                }`}
-              >
-                {canEdit && !isEditing && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    title="تعديل في الصندوق فقط"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      startEdit(message);
-                    }}
-                    className="rounded-md border border-inbox-border bg-inbox-panel px-1.5 py-0.5 text-[10px] text-inbox-text disabled:opacity-50"
-                  >
-                    تعديل
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={busy}
-                  title="حذف من الصندوق فقط"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void handleDelete(message.id);
-                  }}
-                  className="rounded-md border border-red-500/30 bg-inbox-panel px-1.5 py-0.5 text-[10px] text-red-300 disabled:opacity-50"
-                >
-                  حذف
-                </button>
-              </div>
-
               {isEditing ? (
                 <div
                   className={`w-full min-w-0 space-y-2 overflow-hidden rounded-lg px-3 py-2 shadow-sm ${
@@ -805,82 +772,109 @@ export default function ChatWindow({
                   </div>
                 </div>
               ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  setReplyTo(message);
-                  setDetailsId((id) =>
-                    id === message.id ? null : message.id
-                  );
-                }}
-                className={`w-full min-w-0 overflow-hidden rounded-lg px-3 py-2 text-right shadow-sm ${
-                  outbound
-                    ? "rounded-tr-sm bg-inbox-outbound"
-                    : "rounded-tl-sm bg-inbox-inbound"
-                } ${replyTo?.id === message.id ? "ring-1 ring-inbox-accent" : ""}`}
-              >
-                {replySource && (
-                  <div className="mb-1 rounded border-r-2 border-inbox-accent/60 bg-black/20 px-2 py-1 text-[11px] text-inbox-muted">
-                    <p className="truncate">
-                      {replySource.content || replySource.type}
-                    </p>
-                  </div>
-                )}
                 <div
-                  onClick={(e) => {
-                    if (message.type === "image" && src) {
-                      e.stopPropagation();
-                      setLightbox(src);
-                    }
-                  }}
-                  className={
-                    message.type === "image" && src
-                      ? "cursor-zoom-in"
-                      : undefined
-                  }
+                  className={`w-full min-w-0 overflow-hidden rounded-lg shadow-sm ${
+                    outbound
+                      ? "rounded-tr-sm bg-inbox-outbound"
+                      : "rounded-tl-sm bg-inbox-inbound"
+                  } ${replyTo?.id === message.id ? "ring-1 ring-inbox-accent" : ""}`}
                 >
-                  <MessageBody message={message} />
-                </div>
-                <div className="mt-1 flex items-center justify-end gap-2 text-[11px] text-inbox-muted">
-                  <span dir="ltr">{formatMessageTime(message.createdAt)}</span>
-                  {outbound && (
-                    <span
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReplyTo(message);
+                      setDetailsId((id) =>
+                        id === message.id ? null : message.id
+                      );
+                    }}
+                    className="w-full px-3 py-2 text-right"
+                  >
+                    {replySource && (
+                      <div className="mb-1 rounded border-r-2 border-inbox-accent/60 bg-black/20 px-2 py-1 text-[11px] text-inbox-muted">
+                        <p className="truncate">
+                          {replySource.content || replySource.type}
+                        </p>
+                      </div>
+                    )}
+                    <div
+                      onClick={(e) => {
+                        if (message.type === "image" && src) {
+                          e.stopPropagation();
+                          setLightbox(src);
+                        }
+                      }}
                       className={
-                        message.status === "failed"
-                          ? "font-medium text-red-300"
+                        message.type === "image" && src
+                          ? "cursor-zoom-in"
                           : undefined
                       }
                     >
-                      {labelOr(MESSAGE_STATUS_LABELS, message.status)}
-                    </span>
-                  )}
-                </div>
-                {message.status === "failed" && (
-                  <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-red-300">
-                    <span className="min-w-0 truncate">
-                      {message.errorMessage || "فشل الإرسال"}
-                    </span>
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleRetry(message.id);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          void handleRetry(message.id);
-                        }
-                      }}
-                      className="shrink-0 cursor-pointer rounded bg-red-500/30 px-2 py-0.5 hover:bg-red-500/40"
+                      <MessageBody message={message} />
+                    </div>
+                    <div className="mt-1 flex items-center justify-end gap-2 text-[11px] text-inbox-muted">
+                      <span dir="ltr">{formatMessageTime(message.createdAt)}</span>
+                      {outbound && (
+                        <span
+                          className={
+                            message.status === "failed"
+                              ? "font-medium text-red-300"
+                              : undefined
+                          }
+                        >
+                          {labelOr(MESSAGE_STATUS_LABELS, message.status)}
+                        </span>
+                      )}
+                    </div>
+                    {message.status === "failed" && (
+                      <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-red-300">
+                        <span className="min-w-0 truncate">
+                          {message.errorMessage || "فشل الإرسال"}
+                        </span>
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleRetry(message.id);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              void handleRetry(message.id);
+                            }
+                          }}
+                          className="shrink-0 cursor-pointer rounded bg-red-500/30 px-2 py-0.5 hover:bg-red-500/40"
+                        >
+                          إعادة المحاولة
+                        </span>
+                      </div>
+                    )}
+                  </button>
+
+                  <div className="flex items-center justify-start gap-2 border-t border-black/10 px-2 py-1.5">
+                    {canEdit && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        title="تعديل في الصندوق فقط"
+                        onClick={() => startEdit(message)}
+                        className="rounded-md bg-black/15 px-2 py-1 text-[11px] text-inbox-text hover:bg-black/25 disabled:opacity-50"
+                      >
+                        تعديل
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={busy}
+                      title="حذف من الصندوق فقط"
+                      onClick={() => void handleDelete(message.id)}
+                      className="rounded-md bg-red-500/20 px-2 py-1 text-[11px] text-red-200 hover:bg-red-500/30 disabled:opacity-50"
                     >
-                      إعادة المحاولة
-                    </span>
+                      حذف
+                    </button>
                   </div>
-                )}
-              </button>
+                </div>
               )}
               {showDetails && outbound && !isEditing && (
                 <div className="absolute top-full z-20 mt-1 w-56 rounded-lg border border-inbox-border bg-inbox-panel p-2 text-[11px] text-inbox-muted shadow-lg">

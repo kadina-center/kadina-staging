@@ -1169,17 +1169,37 @@ export async function editMessage(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const message = await prisma.message.update({
-      where: { id: messageId },
-      data: { content, editedAt: new Date() },
-    });
+    let message;
+    try {
+      message = await prisma.message.update({
+        where: { id: messageId },
+        data: { content, editedAt: new Date() },
+      });
+    } catch (error) {
+      // Staging may not have run the editedAt migration yet — still allow content edit.
+      const code =
+        error && typeof error === "object" && "code" in error
+          ? String((error as { code?: string }).code)
+          : "";
+      if (code === "P2022") {
+        message = await prisma.message.update({
+          where: { id: messageId },
+          data: { content },
+        });
+      } else {
+        throw error;
+      }
+    }
 
     logAuditFromRequest(req, {
       action: AuditAction.UPDATE,
       entityType: AuditEntity.MESSAGE,
       entityId: messageId,
-      oldValues: { content: existing.content, editedAt: existing.editedAt },
-      newValues: { content: message.content, editedAt: message.editedAt },
+      oldValues: { content: existing.content, editedAt: existing.editedAt ?? null },
+      newValues: {
+        content: message.content,
+        editedAt: "editedAt" in message ? message.editedAt : null,
+      },
       metadata: {
         messageId,
         contactId: existing.contactId,
