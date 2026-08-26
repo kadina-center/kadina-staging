@@ -6,8 +6,10 @@ import {
   formatReplyTime,
   getTags,
   getUsers,
+  lockConversation,
   normalizeSenderType,
   removeConversationTag,
+  unlockConversation,
   updateConversationStatus,
   type Conversation,
   type Tag,
@@ -32,6 +34,13 @@ const STATUS_LABELS: Record<string, string> = {
   pending: "معلقة",
   closed: "مغلقة",
 };
+
+const LOCK_STALE_MS = 15 * 60 * 1000;
+
+function isLockActive(conversation: Conversation): boolean {
+  if (!conversation.lockedById || !conversation.lockedAt) return false;
+  return Date.now() - new Date(conversation.lockedAt).getTime() <= LOCK_STALE_MS;
+}
 
 function senderTypeLabel(value?: string | null): string {
   const t = normalizeSenderType(value);
@@ -174,6 +183,46 @@ export default function ConversationHeader({
       "واتساب"
     : null;
   const repliedType = senderTypeLabel(lastRepliedBy?.senderType);
+  const lockActive = isLockActive(conversation);
+  const lockedByMe = Boolean(lockActive && conversation.lockedById === me?.id);
+  const lockedByOther = Boolean(
+    lockActive && conversation.lockedById && conversation.lockedById !== me?.id
+  );
+  const canUnlock = lockedByMe || (isAdmin && lockActive);
+
+  async function handleLockToggle() {
+    if (lockActive && canUnlock) {
+      if (!window.confirm("فتح قفل المحادثة؟")) return;
+      setBusy(true);
+      setError(null);
+      try {
+        const updated = await unlockConversation(conversation.id);
+        onUpdated(updated);
+        setToast("تم فتح القفل");
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "فشل فتح القفل");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    if (lockedByOther) {
+      setError("المحادثة مقفلة بواسطة موظف آخر");
+      return;
+    }
+    if (!window.confirm("قفل المحادثة لمنع تعارض الردود؟")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await lockConversation(conversation.id);
+      onUpdated(updated);
+      setToast("تم قفل المحادثة");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "فشل القفل");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <header className="border-b border-inbox-border bg-inbox-panel px-4 py-3">
@@ -217,6 +266,17 @@ export default function ConversationHeader({
               >
                 {assignedLabel}
               </span>
+              {lockActive ? (
+                <>
+                  {" · "}
+                  <span className="text-sky-300">
+                    مقفلة
+                    {conversation.lockedBy?.name
+                      ? ` بواسطة ${conversation.lockedBy.name}`
+                      : ""}
+                  </span>
+                </>
+              ) : null}
             </p>
           </div>
         </div>
@@ -233,6 +293,26 @@ export default function ConversationHeader({
             </p>
           </div>
         )}
+
+        <div className="flex flex-col gap-1 text-xs text-inbox-muted">
+          <span>القفل</span>
+          <button
+            type="button"
+            disabled={busy || (lockedByOther && !isAdmin)}
+            onClick={() => void handleLockToggle()}
+            className={`rounded-md px-2.5 py-1.5 text-sm disabled:opacity-50 ${
+              lockActive
+                ? "bg-sky-600/80 text-white"
+                : "bg-inbox-hover text-inbox-text"
+            }`}
+          >
+            {lockActive && canUnlock
+              ? "فتح القفل"
+              : lockedByOther
+                ? "مقفلة"
+                : "قفل"}
+          </button>
+        </div>
 
         <label className="flex flex-col gap-1 text-xs text-inbox-muted">
           الحالة

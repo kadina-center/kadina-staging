@@ -96,6 +96,8 @@ export type Message = {
   errorMessage?: string | null;
   deletedAt?: string | null;
   editedAt?: string | null;
+  pinned?: boolean;
+  starred?: boolean;
   createdAt: string;
 };
 
@@ -917,6 +919,61 @@ export function archiveConversation(
 export function takeOverConversation(id: string): Promise<Conversation> {
   return request<Conversation>(`/conversations/${id}/takeover`, {
     method: "POST",
+  });
+}
+
+export function lockConversation(id: string): Promise<Conversation> {
+  return request<Conversation>(`/conversations/${id}/lock`, {
+    method: "PATCH",
+  });
+}
+
+export function unlockConversation(id: string): Promise<Conversation> {
+  return request<Conversation>(`/conversations/${id}/unlock`, {
+    method: "PATCH",
+  });
+}
+
+export function pinMessage(
+  messageId: string,
+  pinned?: boolean
+): Promise<Message> {
+  return request<Message>(`/messages/${messageId}/pin`, {
+    method: "PATCH",
+    body: JSON.stringify(typeof pinned === "boolean" ? { pinned } : {}),
+  });
+}
+
+export function starMessage(
+  messageId: string,
+  starred?: boolean
+): Promise<Message> {
+  return request<Message>(`/messages/${messageId}/star`, {
+    method: "PATCH",
+    body: JSON.stringify(typeof starred === "boolean" ? { starred } : {}),
+  });
+}
+
+export type InteractiveListSection = {
+  title: string;
+  rows: Array<{ id: string; title: string; description?: string }>;
+};
+
+export function sendInteractiveList(
+  contactId: string,
+  bodyText: string,
+  buttonLabel: string,
+  sections: InteractiveListSection[]
+): Promise<Message> {
+  return request<Message>("/messages/interactive", {
+    method: "POST",
+    body: JSON.stringify({
+      contactId,
+      interactiveType: "list",
+      bodyText,
+      buttonLabel,
+      sections,
+    }),
   });
 }
 

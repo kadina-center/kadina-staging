@@ -7,10 +7,12 @@ import {
   archiveConversation,
   formatMessagePreview,
   getConversationsPage,
+  getTags,
   getUsers,
   getWhatsAppChannelsPublic,
   pinConversation,
   type Conversation,
+  type Tag,
   type User,
   type WhatsAppChannelSummary,
 } from "../lib/api";
@@ -98,6 +100,8 @@ export default function ConversationList({ selectedId, onSelect }: Props) {
   >([]);
   const [assignFilter, setAssignFilter] = useState<AssignFilter>("all");
   const [agents, setAgents] = useState<User[]>([]);
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [tagFilter, setTagFilter] = useState<string>("");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [showArchived, setShowArchived] = useState(false);
@@ -111,6 +115,12 @@ export default function ConversationList({ selectedId, onSelect }: Props) {
       .then(setAgents)
       .catch(() => setAgents([]));
   }, [isAdmin]);
+
+  useEffect(() => {
+    void getTags()
+      .then(setTags)
+      .catch(() => setTags([]));
+  }, []);
 
   useEffect(() => {
     void getWhatsAppChannelsPublic()
@@ -131,6 +141,20 @@ export default function ConversationList({ selectedId, onSelect }: Props) {
     return { assignedToId: assignFilter };
   }
 
+  function listFilters(extra?: { cursor?: string }) {
+    return {
+      ...(filter === "all" ? {} : { status: filter }),
+      ...(channelFilter === "all" ? {} : { channel: channelFilter }),
+      ...whatsappChannelQuery(),
+      ...assignQuery(),
+      ...(debouncedSearch ? { search: debouncedSearch } : {}),
+      ...(tagFilter ? { tag: tagFilter } : {}),
+      archived: showArchived ? "true" : "false",
+      limit: 50,
+      ...extra,
+    } as const;
+  }
+
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 300);
     return () => window.clearTimeout(timer);
@@ -139,15 +163,7 @@ export default function ConversationList({ selectedId, onSelect }: Props) {
   const loadConversations = useCallback(async () => {
     try {
       setError(null);
-      const page = await getConversationsPage({
-        ...(filter === "all" ? {} : { status: filter }),
-        ...(channelFilter === "all" ? {} : { channel: channelFilter }),
-        ...whatsappChannelQuery(),
-        ...assignQuery(),
-        ...(debouncedSearch ? { search: debouncedSearch } : {}),
-        archived: showArchived ? "true" : "false",
-        limit: 50,
-      });
+      const page = await getConversationsPage({ ...listFilters() });
       setConversations(page.items);
       setNextCursor(page.nextCursor);
     } catch (err) {
@@ -155,7 +171,7 @@ export default function ConversationList({ selectedId, onSelect }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [filter, channelFilter, whatsappChannelId, assignFilter, debouncedSearch, showArchived, isAdmin, me?.id]);
+  }, [filter, channelFilter, whatsappChannelId, assignFilter, debouncedSearch, tagFilter, showArchived, isAdmin, me?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -163,15 +179,7 @@ export default function ConversationList({ selectedId, onSelect }: Props) {
     void (async () => {
       try {
         setError(null);
-        const page = await getConversationsPage({
-          ...(filter === "all" ? {} : { status: filter }),
-          ...(channelFilter === "all" ? {} : { channel: channelFilter }),
-          ...whatsappChannelQuery(),
-          ...assignQuery(),
-          ...(debouncedSearch ? { search: debouncedSearch } : {}),
-          archived: showArchived ? "true" : "false",
-          limit: 50,
-        });
+        const page = await getConversationsPage({ ...listFilters() });
         if (!cancelled) {
           setConversations(page.items);
           setNextCursor(page.nextCursor);
@@ -187,21 +195,14 @@ export default function ConversationList({ selectedId, onSelect }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [filter, channelFilter, whatsappChannelId, assignFilter, debouncedSearch, showArchived, isAdmin, me?.id]);
+  }, [filter, channelFilter, whatsappChannelId, assignFilter, debouncedSearch, tagFilter, showArchived, isAdmin, me?.id]);
 
   async function loadMore() {
     if (!nextCursor || loadingMore) return;
     setLoadingMore(true);
     try {
       const page = await getConversationsPage({
-        ...(filter === "all" ? {} : { status: filter }),
-        ...(channelFilter === "all" ? {} : { channel: channelFilter }),
-        ...whatsappChannelQuery(),
-        ...assignQuery(),
-        ...(debouncedSearch ? { search: debouncedSearch } : {}),
-        archived: showArchived ? "true" : "false",
-        limit: 50,
-        cursor: nextCursor,
+        ...listFilters({ cursor: nextCursor }),
       });
       setConversations((prev) => {
         const ids = new Set(prev.map((c) => c.id));
@@ -257,13 +258,20 @@ export default function ConversationList({ selectedId, onSelect }: Props) {
           }
         }
 
+        const matchesTag =
+          !tagFilter ||
+          (payload.tags || []).some(
+            (t) => t.id === tagFilter || t.name === tagFilter
+          );
+
         if (
           !matchesStatus ||
           !matchesChannel ||
           !matchesWaChannel ||
           !matchesArchived ||
           !matchesSearch ||
-          !matchesAssign
+          !matchesAssign ||
+          !matchesTag
         ) {
           return without;
         }
@@ -279,7 +287,7 @@ export default function ConversationList({ selectedId, onSelect }: Props) {
         });
       });
     },
-    [filter, channelFilter, whatsappChannelId, showArchived, debouncedSearch, assignFilter, isAdmin]
+    [filter, channelFilter, whatsappChannelId, showArchived, debouncedSearch, assignFilter, tagFilter, isAdmin]
   );
 
   const { connected } = useSocket({
@@ -394,6 +402,30 @@ export default function ConversationList({ selectedId, onSelect }: Props) {
             </select>
           </div>
         )}
+
+        <div className="mt-2 flex gap-1.5">
+          <select
+            value={tagFilter}
+            onChange={(e) => setTagFilter(e.target.value)}
+            className="min-w-0 flex-1 rounded-md bg-inbox-hover px-2 py-1.5 text-xs text-inbox-text outline-none"
+          >
+            <option value="">الوسم: الكل</option>
+            {tags.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          {tagFilter ? (
+            <button
+              type="button"
+              onClick={() => setTagFilter("")}
+              className="shrink-0 rounded-md bg-inbox-hover px-2 py-1.5 text-xs text-inbox-muted hover:text-inbox-text"
+            >
+              إزالة
+            </button>
+          ) : null}
+        </div>
 
         <div className="mt-2 flex flex-wrap gap-1.5">
           {CHANNEL_FILTERS.map((item) => (

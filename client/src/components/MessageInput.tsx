@@ -8,6 +8,7 @@ import {
 } from "react";
 import {
   getTemplates,
+  type InteractiveListSection,
   type Message,
   type Template,
 } from "../lib/api";
@@ -30,10 +31,17 @@ type Props = {
     bodyText: string,
     buttons: Array<{ id: string; title: string }>
   ) => Promise<void> | void;
+  onSendInteractiveList?: (
+    bodyText: string,
+    buttonLabel: string,
+    sections: InteractiveListSection[]
+  ) => Promise<void> | void;
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const EMOJIS = ["👍", "🙏", "😊", "✅", "❤️", "🎉", "👋", "🙂"];
+
+type ComposerMode = "text" | "template" | "list";
 
 function isOutsideCustomerWindow(lastInboundAt?: string | null): boolean {
   if (!lastInboundAt) return true;
@@ -44,6 +52,44 @@ function extractParamCount(bodyText: string): number {
   const matches = bodyText.match(/\{\{(\d+)\}\}/g) || [];
   const nums = matches.map((m) => Number(m.replace(/[{}]/g, "")));
   return nums.length ? Math.max(...nums) : 0;
+}
+
+function emptySection(): InteractiveListSection {
+  return {
+    title: "القسم 1",
+    rows: [{ id: "row_1", title: "خيار 1", description: "" }],
+  };
+}
+
+function validateList(
+  bodyText: string,
+  buttonLabel: string,
+  sections: InteractiveListSection[]
+): string | null {
+  if (!bodyText.trim()) return "نص القائمة مطلوب";
+  if (!buttonLabel.trim()) return "عنوان زر القائمة مطلوب";
+  if (buttonLabel.trim().length > 20) return "عنوان الزر بحد أقصى 20 حرفًا";
+  if (!sections.length) return "أضف قسمًا واحدًا على الأقل";
+  if (sections.length > 10) return "الحد الأقصى 10 أقسام";
+  const totalRows = sections.reduce((n, s) => n + s.rows.length, 0);
+  if (totalRows < 1) return "أضف صفًا واحدًا على الأقل";
+  if (totalRows > 10) return "الحد الأقصى 10 صفوف إجمالًا";
+  const ids = new Set<string>();
+  for (const section of sections) {
+    if (!section.title.trim()) return "عنوان كل قسم مطلوب";
+    if (!section.rows.length) return "كل قسم يحتاج صفًا واحدًا على الأقل";
+    for (const row of section.rows) {
+      if (!row.id.trim()) return "معرّف كل صف مطلوب";
+      if (!row.title.trim()) return "عنوان كل صف مطلوب";
+      if (row.title.trim().length > 24) return "عنوان الصف بحد أقصى 24 حرفًا";
+      if ((row.description || "").length > 72) {
+        return "وصف الصف بحد أقصى 72 حرفًا";
+      }
+      if (ids.has(row.id.trim())) return "معرّفات الصفوف يجب أن تكون فريدة";
+      ids.add(row.id.trim());
+    }
+  }
+  return null;
 }
 
 export default function MessageInput({
@@ -57,18 +103,24 @@ export default function MessageInput({
   onSendMedia,
   onSendTemplate,
   onSendInteractiveButtons,
+  onSendInteractiveList,
 }: Props) {
   const [text, setText] = useState("");
   const [caption, setCaption] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [mode, setMode] = useState<"text" | "template">("text");
+  const [mode, setMode] = useState<ComposerMode>("text");
   const [templates, setTemplates] = useState<Template[]>([]);
   const [templateId, setTemplateId] = useState("");
   const [params, setParams] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [listBody, setListBody] = useState("");
+  const [listButton, setListButton] = useState("اختر");
+  const [listSections, setListSections] = useState<InteractiveListSection[]>([
+    emptySection(),
+  ]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const typingTimerRef = useRef<number | null>(null);
 
@@ -125,46 +177,36 @@ export default function MessageInput({
 
   function handleTextChange(value: string) {
     setText(value);
-    onTypingStart?.();
+    if (!onTypingStart || !onTypingStop) return;
+    onTypingStart();
     if (typingTimerRef.current) window.clearTimeout(typingTimerRef.current);
     typingTimerRef.current = window.setTimeout(() => {
-      onTypingStop?.();
+      onTypingStop();
     }, 1200);
   }
 
-  function onDrop(event: DragEvent) {
-    event.preventDefault();
-    setDragOver(false);
-    const next = event.dataTransfer.files?.[0];
-    if (next) setFile(next);
-  }
+  const canSubmit = Boolean(
+    file ? true : mode === "template" ? templateId : text.trim()
+  );
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    if (sending || disabled) return;
-
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (disabled || sending) return;
     setSending(true);
     setError(null);
     try {
       if (mode === "template") {
-        if (!templateId) throw new Error("اختر قالبًا معتمدًا");
-        if (selectedTemplate && selectedTemplate.status !== "approved") {
-          throw new Error(
-            "هذا القالب لم يُعتمد من ميتا بعد. حدّث الحالة من صفحة القوالب."
-          );
-        }
+        if (!templateId) throw new Error("اختر قالبًا");
         await onSendTemplate(templateId, params);
         setTemplateId("");
         setParams([]);
       } else if (file) {
-        await onSendMedia(file, caption || undefined);
+        await onSendMedia(file, caption.trim() || undefined);
         clearFile();
-        setText("");
-        onClearReply?.();
       } else {
-        const value = text.trim();
-        if (!value) return;
-        await onSend(value, replyTo?.id);
+        const body = text.trim();
+        if (!body) return;
+        await onSend(body, replyTo?.id);
         setText("");
         onClearReply?.();
       }
@@ -176,12 +218,52 @@ export default function MessageInput({
     }
   }
 
-  const canSubmit =
-    mode === "template"
-      ? Boolean(templateId)
-      : file
-        ? true
-        : Boolean(text.trim());
+  async function handleSendList() {
+    if (!onSendInteractiveList || disabled || sending) return;
+    const validationError = validateList(listBody, listButton, listSections);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    setSending(true);
+    setError(null);
+    try {
+      const cleaned = listSections.map((section) => ({
+        title: section.title.trim(),
+        rows: section.rows.map((row) => ({
+          id: row.id.trim(),
+          title: row.title.trim(),
+          ...(row.description?.trim()
+            ? { description: row.description.trim() }
+            : {}),
+        })),
+      }));
+      await onSendInteractiveList(
+        listBody.trim(),
+        listButton.trim(),
+        cleaned
+      );
+      setListBody("");
+      setListButton("اختر");
+      setListSections([emptySection()]);
+      setMode("text");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "فشل إرسال القائمة");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  function onDrop(e: DragEvent) {
+    e.preventDefault();
+    setDragOver(false);
+    const next = e.dataTransfer.files?.[0];
+    if (next) setFile(next);
+  }
+
+  const listPreviewRows = listSections.flatMap((s) =>
+    s.rows.map((r) => ({ section: s.title, ...r }))
+  );
 
   return (
     <form
@@ -192,8 +274,8 @@ export default function MessageInput({
       }}
       onDragLeave={() => setDragOver(false)}
       onDrop={onDrop}
-      className={`border-t border-inbox-border bg-inbox-panel px-3 py-3 ${
-        dragOver ? "ring-2 ring-inset ring-inbox-accent" : ""
+      className={`border-t border-inbox-border px-3 py-3 ${
+        dragOver ? "bg-inbox-accent/10" : "bg-inbox-panel"
       }`}
     >
       {needsTemplate && (
@@ -231,6 +313,31 @@ export default function MessageInput({
       )}
 
       {error && <p className="mb-2 text-xs text-red-400">{error}</p>}
+
+      {!needsTemplate && (
+        <div className="mb-2 flex flex-wrap gap-1">
+          {(
+            [
+              ["text", "نص"],
+              ["list", "قائمة"],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              disabled={disabled || sending || Boolean(file)}
+              onClick={() => setMode(key)}
+              className={`rounded-md px-2.5 py-1 text-xs ${
+                mode === key
+                  ? "bg-inbox-accent text-white"
+                  : "bg-inbox-hover text-inbox-muted"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {mode === "template" ? (
         <div className="space-y-2">
@@ -270,6 +377,187 @@ export default function MessageInput({
           >
             {sending ? "..." : "إرسال القالب"}
           </button>
+        </div>
+      ) : mode === "list" && onSendInteractiveList ? (
+        <div className="space-y-2">
+          <textarea
+            value={listBody}
+            onChange={(e) => setListBody(e.target.value)}
+            rows={2}
+            dir="rtl"
+            disabled={disabled || sending}
+            placeholder="نص القائمة (Body)"
+            className="w-full rounded-lg bg-inbox-hover px-3 py-2 text-sm outline-none"
+          />
+          <input
+            value={listButton}
+            onChange={(e) => setListButton(e.target.value)}
+            disabled={disabled || sending}
+            placeholder="عنوان زر القائمة (CTA)"
+            className="w-full rounded-lg bg-inbox-hover px-3 py-2 text-sm outline-none"
+            dir="rtl"
+          />
+
+          {listSections.map((section, sIdx) => (
+            <div
+              key={sIdx}
+              className="space-y-2 rounded-lg border border-inbox-border bg-inbox-hover/40 p-2"
+            >
+              <div className="flex gap-2">
+                <input
+                  value={section.title}
+                  onChange={(e) => {
+                    const next = [...listSections];
+                    next[sIdx] = { ...section, title: e.target.value };
+                    setListSections(next);
+                  }}
+                  placeholder="عنوان القسم"
+                  className="min-w-0 flex-1 rounded bg-inbox-panel px-2 py-1 text-xs outline-none"
+                />
+                <button
+                  type="button"
+                  disabled={listSections.length <= 1 || disabled || sending}
+                  onClick={() =>
+                    setListSections((prev) =>
+                      prev.filter((_, i) => i !== sIdx)
+                    )
+                  }
+                  className="text-xs text-red-300 disabled:opacity-40"
+                >
+                  حذف قسم
+                </button>
+              </div>
+              {section.rows.map((row, rIdx) => (
+                <div key={rIdx} className="grid gap-1 sm:grid-cols-3">
+                  <input
+                    value={row.id}
+                    onChange={(e) => {
+                      const next = [...listSections];
+                      const rows = [...section.rows];
+                      rows[rIdx] = { ...row, id: e.target.value };
+                      next[sIdx] = { ...section, rows };
+                      setListSections(next);
+                    }}
+                    placeholder="row id"
+                    dir="ltr"
+                    className="rounded bg-inbox-panel px-2 py-1 text-xs outline-none"
+                  />
+                  <input
+                    value={row.title}
+                    onChange={(e) => {
+                      const next = [...listSections];
+                      const rows = [...section.rows];
+                      rows[rIdx] = { ...row, title: e.target.value };
+                      next[sIdx] = { ...section, rows };
+                      setListSections(next);
+                    }}
+                    placeholder="عنوان الصف"
+                    className="rounded bg-inbox-panel px-2 py-1 text-xs outline-none"
+                  />
+                  <div className="flex gap-1">
+                    <input
+                      value={row.description || ""}
+                      onChange={(e) => {
+                        const next = [...listSections];
+                        const rows = [...section.rows];
+                        rows[rIdx] = { ...row, description: e.target.value };
+                        next[sIdx] = { ...section, rows };
+                        setListSections(next);
+                      }}
+                      placeholder="وصف (اختياري)"
+                      className="min-w-0 flex-1 rounded bg-inbox-panel px-2 py-1 text-xs outline-none"
+                    />
+                    <button
+                      type="button"
+                      disabled={section.rows.length <= 1 || disabled || sending}
+                      onClick={() => {
+                        const next = [...listSections];
+                        next[sIdx] = {
+                          ...section,
+                          rows: section.rows.filter((_, i) => i !== rIdx),
+                        };
+                        setListSections(next);
+                      }}
+                      className="text-xs text-red-300 disabled:opacity-40"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              ))}
+              <button
+                type="button"
+                disabled={disabled || sending}
+                onClick={() => {
+                  const next = [...listSections];
+                  next[sIdx] = {
+                    ...section,
+                    rows: [
+                      ...section.rows,
+                      {
+                        id: `row_${Date.now()}`,
+                        title: "خيار جديد",
+                        description: "",
+                      },
+                    ],
+                  };
+                  setListSections(next);
+                }}
+                className="text-xs text-inbox-accent"
+              >
+                + صف
+              </button>
+            </div>
+          ))}
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={disabled || sending || listSections.length >= 10}
+              onClick={() =>
+                setListSections((prev) => [
+                  ...prev,
+                  {
+                    title: `القسم ${prev.length + 1}`,
+                    rows: [
+                      {
+                        id: `row_${Date.now()}`,
+                        title: "خيار",
+                        description: "",
+                      },
+                    ],
+                  },
+                ])
+              }
+              className="rounded-md bg-inbox-hover px-2 py-1 text-xs disabled:opacity-50"
+            >
+              + قسم
+            </button>
+            <button
+              type="button"
+              disabled={disabled || sending}
+              onClick={() => void handleSendList()}
+              className="rounded-lg bg-inbox-accent px-4 py-2 text-sm text-white disabled:opacity-50"
+            >
+              {sending ? "..." : "إرسال القائمة"}
+            </button>
+          </div>
+
+          <div className="rounded-md border border-inbox-border bg-black/20 p-2 text-xs text-inbox-muted">
+            <p className="mb-1 font-medium text-inbox-text">معاينة</p>
+            <p className="whitespace-pre-wrap text-inbox-text">
+              {listBody || "—"}
+            </p>
+            <p className="mt-1">الزر: {listButton || "—"}</p>
+            <ul className="mt-1 list-disc pe-4">
+              {listPreviewRows.map((r, i) => (
+                <li key={`${r.id}-${i}`}>
+                  [{r.section}] {r.title}
+                  {r.description ? ` — ${r.description}` : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       ) : (
         <>

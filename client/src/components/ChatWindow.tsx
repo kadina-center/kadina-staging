@@ -18,15 +18,19 @@ import {
   messageAvatar,
   messageSenderName,
   normalizeSenderType,
+  pinMessage,
   retryMessage,
   sendInteractiveButtons,
+  sendInteractiveList,
   sendMediaMessage,
   sendMessage,
   senderLabel,
   sendTemplateMessage,
   shouldShowOutboundSender,
+  starMessage,
   takeOverConversation,
   type Conversation,
+  type InteractiveListSection,
   type Message,
 } from "../lib/api";
 import { getStoredUser } from "../lib/auth";
@@ -138,6 +142,37 @@ function MetaPayloadView({ raw }: { raw?: string | null }) {
             </span>
           ))}
         </div>
+      </div>
+    );
+  }
+
+  if (obj.interactiveType === "list" || Array.isArray(obj.sections)) {
+    const bodyText = String(obj.bodyText || "");
+    const buttonLabel = String(obj.buttonLabel || "قائمة");
+    const sections =
+      (obj.sections as Array<{
+        title?: string;
+        rows?: Array<{ id?: string; title?: string; description?: string }>;
+      }>) || [];
+    return (
+      <div className="space-y-2 text-sm">
+        {bodyText && (
+          <p className="whitespace-pre-wrap break-words leading-6">{bodyText}</p>
+        )}
+        <p className="text-xs text-inbox-muted">زر القائمة: {buttonLabel}</p>
+        {sections.map((section, si) => (
+          <div key={si} className="rounded border border-white/10 bg-black/15 px-2 py-1.5">
+            <p className="text-xs font-medium">{section.title || "قسم"}</p>
+            <ul className="mt-1 space-y-0.5 text-xs text-inbox-muted">
+              {(section.rows || []).map((row, ri) => (
+                <li key={row.id || String(ri)}>
+                  {row.title || row.id}
+                  {row.description ? ` — ${row.description}` : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
       </div>
     );
   }
@@ -291,6 +326,9 @@ export default function ChatWindow({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [messageFilter, setMessageFilter] = useState<"all" | "pinned" | "starred">(
+    "all"
+  );
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const contactId = conversation?.contactId ?? null;
   const conversationId = conversation?.id ?? null;
@@ -300,6 +338,24 @@ export default function ChatWindow({
     for (const m of messages) map.set(m.id, m);
     return map;
   }, [messages]);
+
+  const visibleMessages = useMemo(() => {
+    if (messageFilter === "pinned") return messages.filter((m) => m.pinned);
+    if (messageFilter === "starred") return messages.filter((m) => m.starred);
+    return messages;
+  }, [messages, messageFilter]);
+
+  const lockStaleMs = 15 * 60 * 1000;
+  const lockActive = Boolean(
+    conversation?.lockedById &&
+      conversation.lockedAt &&
+      Date.now() - new Date(conversation.lockedAt).getTime() <= lockStaleMs
+  );
+  const lockedByOther = Boolean(
+    lockActive &&
+      conversation?.lockedById &&
+      conversation.lockedById !== getStoredUser()?.id
+  );
 
   const lastInboundAt = useMemo(() => {
     const inbound = [...messages]
@@ -457,7 +513,7 @@ export default function ChatWindow({
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [visibleMessages]);
 
   function applyOutboundResult(saved: Message) {
     setMessages((prev) => upsertMessage(prev, saved));
@@ -560,6 +616,53 @@ export default function ChatWindow({
     }
   }
 
+  async function handleSendInteractiveList(
+    bodyText: string,
+    buttonLabel: string,
+    sections: InteractiveListSection[]
+  ) {
+    if (!contactId) return;
+    setError(null);
+    try {
+      const saved = await sendInteractiveList(
+        contactId,
+        bodyText,
+        buttonLabel,
+        sections
+      );
+      applyOutboundResult(saved);
+    } catch (err) {
+      handleOutboundError(err, "فشل إرسال القائمة التفاعلية");
+      throw err;
+    }
+  }
+
+  async function handlePinToggle(message: Message) {
+    setActionBusy(message.id);
+    setError(null);
+    try {
+      const saved = await pinMessage(message.id, !message.pinned);
+      setMessages((prev) => upsertMessage(prev, saved));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "فشل تثبيت الرسالة");
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function handleStarToggle(message: Message) {
+    setActionBusy(message.id);
+    setError(null);
+    try {
+      const saved = await starMessage(message.id, !message.starred);
+      setMessages((prev) => upsertMessage(prev, saved));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "فشل تمييز الرسالة");
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
   async function handleSendTemplate(templateId: string, params: string[]) {
     if (!contactId) return;
     setError(null);
@@ -655,6 +758,37 @@ export default function ChatWindow({
         <FlowTestBanner contactId={contactId} />
       </div>
 
+      {lockedByOther && (
+        <div className="shrink-0 border-b border-sky-500/30 bg-sky-500/10 px-4 py-2 text-xs text-sky-200">
+          المحادثة مقفلة بواسطة{" "}
+          {conversation.lockedBy?.name || "موظف آخر"} — يمكنك المشاهدة فقط حتى
+          يُفتح القفل.
+        </div>
+      )}
+
+      <div className="flex shrink-0 gap-1 border-b border-inbox-border px-4 py-2">
+        {(
+          [
+            ["all", "كل الرسائل"],
+            ["pinned", "مثبّتة"],
+            ["starred", "مميزة"],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setMessageFilter(key)}
+            className={`rounded-md px-2.5 py-1 text-[11px] ${
+              messageFilter === key
+                ? "bg-inbox-accent text-white"
+                : "bg-inbox-hover text-inbox-muted"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       <div
         className="scroll-panel min-h-0 flex-1 space-y-2 overflow-y-auto overflow-x-hidden px-4 py-4"
         style={{
@@ -666,14 +800,22 @@ export default function ChatWindow({
           <p className="text-sm text-inbox-muted">جاري تحميل الرسائل...</p>
         )}
         {error && <p className="text-sm text-red-400">{error}</p>}
+        {!loading && visibleMessages.length === 0 && (
+          <p className="text-sm text-inbox-muted">
+            {messageFilter === "all"
+              ? "لا توجد رسائل بعد."
+              : "لا توجد رسائل مطابقة لهذا الفلتر."}
+          </p>
+        )}
 
-        {messages.map((message, index) => {
+        {visibleMessages.map((message) => {
+          const index = messages.findIndex((m) => m.id === message.id);
           const outbound = message.direction === "outbound";
           const src = mediaSrc(message.mediaUrl);
           const replySource = message.replyToMessageId
             ? messagesById.get(message.replyToMessageId)
             : null;
-          const showSender = shouldShowOutboundSender(messages, index);
+          const showSender = shouldShowOutboundSender(messages, Math.max(0, index));
           const label = senderLabel(message);
           const senderType = normalizeSenderType(
             message.senderType,
@@ -852,7 +994,7 @@ export default function ChatWindow({
                     )}
                   </button>
 
-                  <div className="flex items-center justify-start gap-2 border-t border-black/10 px-2 py-1.5">
+                  <div className="flex flex-wrap items-center justify-start gap-2 border-t border-black/10 px-2 py-1.5">
                     {canEdit && (
                       <button
                         type="button"
@@ -864,6 +1006,32 @@ export default function ChatWindow({
                         تعديل
                       </button>
                     )}
+                    <button
+                      type="button"
+                      disabled={busy}
+                      title={message.pinned ? "إلغاء التثبيت" : "تثبيت"}
+                      onClick={() => void handlePinToggle(message)}
+                      className={`rounded-md px-2 py-1 text-[11px] disabled:opacity-50 ${
+                        message.pinned
+                          ? "bg-amber-500/30 text-amber-100"
+                          : "bg-black/15 text-inbox-text hover:bg-black/25"
+                      }`}
+                    >
+                      {message.pinned ? "مثبّتة" : "تثبيت"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      title={message.starred ? "إلغاء التمييز" : "تمييز"}
+                      onClick={() => void handleStarToggle(message)}
+                      className={`rounded-md px-2 py-1 text-[11px] disabled:opacity-50 ${
+                        message.starred
+                          ? "bg-yellow-500/30 text-yellow-100"
+                          : "bg-black/15 text-inbox-text hover:bg-black/25"
+                      }`}
+                    >
+                      {message.starred ? "مميزة ★" : "تمييز"}
+                    </button>
                     <button
                       type="button"
                       disabled={busy}
@@ -917,6 +1085,7 @@ export default function ChatWindow({
 
       <div className="shrink-0 border-t border-inbox-border bg-inbox-panel">
         <MessageInput
+          disabled={lockedByOther}
           lastInboundAt={lastInboundAt}
           replyTo={replyTo}
           onClearReply={() => setReplyTo(null)}
@@ -930,6 +1099,7 @@ export default function ChatWindow({
           onSendMedia={handleSendMedia}
           onSendTemplate={handleSendTemplate}
           onSendInteractiveButtons={handleSendInteractiveButtons}
+          onSendInteractiveList={handleSendInteractiveList}
         />
       </div>
 
