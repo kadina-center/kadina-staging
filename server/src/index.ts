@@ -42,6 +42,7 @@ const app = express();
 // are derived correctly (avoids ERR_ERL_UNEXPECTED_X_FORWARDED_FOR).
 app.set("trust proxy", 1);
 
+// Local provider creates its root on first use; ensure dir exists for local default.
 if (!fs.existsSync(env.MEDIA_STORAGE_PATH)) {
   fs.mkdirSync(env.MEDIA_STORAGE_PATH, { recursive: true });
 }
@@ -157,7 +158,12 @@ async function startWithRetry(maxAttempts = 5): Promise<void> {
       await listenAsync(env.PORT);
       console.log(`[server] Listening on http://localhost:${env.PORT}`);
       console.log(`[server] CORS origin: ${env.CLIENT_ORIGIN}`);
-      console.log(`[server] Media storage: ${env.MEDIA_STORAGE_PATH}`);
+      const { mediaStorageRootHint, getMediaStorageProvider } = await import(
+        "./services/media"
+      );
+      console.log(
+        `[server] Media storage (${getMediaStorageProvider().name}): ${mediaStorageRootHint()}`
+      );
       registerFlowJobHandlers();
       startScheduledJobRunner();
       return;

@@ -746,15 +746,20 @@ export async function sendMedia(
     const whatsAppChannelId =
       conversationChannel?.channelId || contact.whatsAppChannelId || null;
 
-    // Keep a local copy for the inbox UI (and upload that path to Meta)
-    const local = saveMediaBuffer(file.buffer, mimeType, file.originalname);
+    // Persist via storage provider; upload the in-memory buffer to Meta
+    const local = await saveMediaBuffer(
+      file.buffer,
+      mimeType,
+      file.originalname
+    );
     const content = caption || file.originalname || `[${mediaType}]`;
 
     try {
       const { mediaId } = await uploadMedia(
-        local.absolutePath,
+        file.buffer,
         mimeType,
-        whatsAppChannelId
+        whatsAppChannelId,
+        file.originalname || local.filename
       );
       const { waMessageId } = await sendMediaMessage(
         contact.phone,

@@ -1,57 +1,58 @@
-import fs from "fs";
-import path from "path";
-import { randomUUID } from "crypto";
 import { env } from "../config/env";
+import { getMediaStorageProvider } from "./media";
+import { LocalMediaStorageProvider } from "./media/local-media-storage.provider";
+import type { MediaPutResult } from "./media/media-storage.types";
 
-function ensureStorageDir(): void {
-  if (!fs.existsSync(env.MEDIA_STORAGE_PATH)) {
-    fs.mkdirSync(env.MEDIA_STORAGE_PATH, { recursive: true });
-  }
-}
+export type { MediaPutResult, MediaStorageProvider } from "./media/media-storage.types";
+export {
+  getMediaStorageProvider,
+  resetMediaStorageProvider,
+  createMediaStorageProvider,
+} from "./media";
 
-function extensionFromMime(mimeType: string, _originalName?: string): string {
-  // Never trust the client-supplied filename/extension (XSS via .html/.js on /uploads).
-  const map: Record<string, string> = {
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-    "image/gif": ".gif",
-    "audio/ogg": ".ogg",
-    "audio/mpeg": ".mp3",
-    "audio/mp4": ".m4a",
-    "audio/aac": ".aac",
-    "video/mp4": ".mp4",
-    "video/3gpp": ".3gp",
-    "application/pdf": ".pdf",
-    "application/msword": ".doc",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-      ".docx",
-    "application/vnd.ms-excel": ".xls",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
-      ".xlsx",
-    "text/plain": ".txt",
-  };
-  return map[mimeType] || ".bin";
-}
-
-/** Saves a buffer locally and returns a public path like `/uploads/filename.ext` */
-export function saveMediaBuffer(
+/**
+ * Persist media via the active provider (local by default).
+ * Returns a publicPath suitable for Message.mediaUrl:
+ * - local: `/uploads/<filename>`
+ * - s3: `s3:<objectKey>`
+ */
+export async function saveMediaBuffer(
   buffer: Buffer,
   mimeType: string,
   originalName?: string
-): { absolutePath: string; publicPath: string; filename: string } {
-  ensureStorageDir();
-  const filename = `${Date.now()}-${randomUUID()}${extensionFromMime(
-    mimeType,
-    originalName
-  )}`;
-  const absolutePath = path.join(env.MEDIA_STORAGE_PATH, filename);
-  fs.writeFileSync(absolutePath, buffer);
-  return {
-    absolutePath,
-    publicPath: `/uploads/${filename}`,
-    filename,
-  };
+): Promise<MediaPutResult> {
+  return getMediaStorageProvider().put(buffer, mimeType, originalName);
+}
+
+/** Read bytes; falls back to local disk for legacy `/uploads/` paths. */
+export async function readMediaBuffer(
+  publicPath: string
+): Promise<Buffer | null> {
+  const provider = getMediaStorageProvider();
+  const fromProvider = await provider.getBuffer(publicPath);
+  if (fromProvider) return fromProvider;
+  if (publicPath.startsWith("/uploads/") && provider.name !== "local") {
+    return new LocalMediaStorageProvider(env.MEDIA_STORAGE_PATH).getBuffer(
+      publicPath
+    );
+  }
+  return null;
+}
+
+/**
+ * Absolute path for express sendFile when the object lives on local disk
+ * (including legacy uploads after switching driver to S3).
+ */
+export function resolveMediaAbsolutePath(publicPath: string): string | null {
+  const provider = getMediaStorageProvider();
+  const fromProvider = provider.resolveLocalAbsolute?.(publicPath) ?? null;
+  if (fromProvider) return fromProvider;
+  if (publicPath.startsWith("/uploads/") && provider.name !== "local") {
+    return new LocalMediaStorageProvider(
+      env.MEDIA_STORAGE_PATH
+    ).resolveLocalAbsolute(publicPath);
+  }
+  return null;
 }
 
 export function resolveLocalMediaUrl(publicPath: string): string {

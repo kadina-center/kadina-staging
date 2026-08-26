@@ -11,11 +11,14 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
+    "test:media": "ts-node --transpile-only scripts/test-media-storage.ts",
     "backup": "node scripts/backup-db.js",
     "restore:json": "node scripts/restore-json.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "@aws-sdk/client-s3": "^3.1118.0",
+    "@aws-sdk/s3-request-presigner": "^3.1118.0",
     "@prisma/client": "^5.22.0",
     "axios": "^1.7.9",
     "bcryptjs": "^3.0.3",

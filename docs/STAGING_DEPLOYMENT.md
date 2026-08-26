@@ -325,7 +325,12 @@ Subscribe to messages / message_status as required by your Meta app.
 
 ## Media / uploads (Staging limitation)
 
-- Files are stored on the Railway disk under `MEDIA_STORAGE_PATH` (default `./uploads`).
+- Default driver is **local** filesystem under `MEDIA_STORAGE_PATH` (default `./uploads`).
+- Railway disks are ephemeral: files can be lost on redeploy. P0.2 added pluggable
+  `MEDIA_STORAGE_DRIVER=auto|local|s3` plus optional S3-compatible ENV
+  (`S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, …).
+- Leave S3 unset on Staging until you intentionally switch; existing `/uploads/...`
+  message URLs keep working via signed `/media/...` routes.
 - Access is via **signed** `/media/:filename` URLs (not public static browsing).
 - Railway filesystem may be **ephemeral**: files can disappear after redeploy/restart.
 - For Staging Demo this loss is **accepted**.

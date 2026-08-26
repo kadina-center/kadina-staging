@@ -383,7 +383,7 @@ async function storeInboundMedia(
 ): Promise<{ publicPath: string; mimeType: string }> {
   const temporaryUrl = await getMediaUrl(mediaId, whatsAppChannelId);
   const buffer = await downloadMedia(temporaryUrl, whatsAppChannelId);
-  const saved = saveMediaBuffer(buffer, mimeType, filename ?? undefined);
+  const saved = await saveMediaBuffer(buffer, mimeType, filename ?? undefined);
   return { publicPath: saved.publicPath, mimeType };
 }
 

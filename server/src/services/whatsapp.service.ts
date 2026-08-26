@@ -208,10 +208,29 @@ export async function sendInteractiveList(
   }
 }
 
+function mimeToExt(mimeType: string): string {
+  const map: Record<string, string> = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "audio/ogg": ".ogg",
+    "audio/mpeg": ".mp3",
+    "video/mp4": ".mp4",
+    "application/pdf": ".pdf",
+  };
+  return map[mimeType] || ".bin";
+}
+
+/**
+ * Upload media to Meta. Accepts a local filesystem path or an in-memory buffer
+ * so S3-backed storage does not need a disk file for WhatsApp upload.
+ */
 export async function uploadMedia(
-  filePath: string,
+  filePathOrBuffer: string | Buffer,
   mimeType: string,
-  channelId?: string | null
+  channelId?: string | null,
+  filename?: string
 ): Promise<{ mediaId: string }> {
   const { phoneNumberId, accessToken } = await assertCredentials(channelId);
   const url = `https://graph.facebook.com/v20.0/${phoneNumberId}/media`;
@@ -219,10 +238,19 @@ export async function uploadMedia(
   const form = new FormData();
   form.append("messaging_product", "whatsapp");
   form.append("type", mimeType);
-  form.append("file", fs.createReadStream(filePath), {
-    filename: path.basename(filePath),
-    contentType: mimeType,
-  });
+  if (Buffer.isBuffer(filePathOrBuffer)) {
+    const name = filename || `upload${mimeToExt(mimeType)}`;
+    form.append("file", filePathOrBuffer, {
+      filename: path.basename(name),
+      contentType: mimeType,
+      knownLength: filePathOrBuffer.length,
+    });
+  } else {
+    form.append("file", fs.createReadStream(filePathOrBuffer), {
+      filename: path.basename(filePathOrBuffer),
+      contentType: mimeType,
+    });
+  }
 
   try {
     const { data } = await axios.post<MetaMediaUploadResponse>(url, form, {

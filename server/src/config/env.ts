@@ -33,6 +33,21 @@ export const env = {
     process.cwd(),
     readEnv("MEDIA_STORAGE_PATH", "./uploads")
   ),
+  /**
+   * Media backend: auto | local | s3
+   * auto = S3 when bucket+keys are real; otherwise local. Never required.
+   */
+  MEDIA_STORAGE_DRIVER: readEnv("MEDIA_STORAGE_DRIVER", "auto"),
+  S3_ENDPOINT: readEnv("S3_ENDPOINT", ""),
+  S3_REGION: readEnv("S3_REGION", "us-east-1"),
+  S3_BUCKET: readEnv("S3_BUCKET", ""),
+  S3_ACCESS_KEY_ID: readEnv("S3_ACCESS_KEY_ID", ""),
+  S3_SECRET_ACCESS_KEY: readEnv("S3_SECRET_ACCESS_KEY", ""),
+  S3_FORCE_PATH_STYLE:
+    readEnv("S3_FORCE_PATH_STYLE", "true").toLowerCase() !== "false",
+  /** Optional CDN/public base for objects (otherwise private + signed proxy). */
+  S3_PUBLIC_BASE_URL: readEnv("S3_PUBLIC_BASE_URL", ""),
+  S3_KEY_PREFIX: readEnv("S3_KEY_PREFIX", "media/"),
   PUBLIC_BASE_URL: readEnv("PUBLIC_BASE_URL", "http://localhost:4000"),
   BROADCAST_BATCH_SIZE: Number(readEnv("BROADCAST_BATCH_SIZE", "20")) || 20,
   BROADCAST_BATCH_DELAY_MS:
