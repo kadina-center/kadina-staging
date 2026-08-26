@@ -119,7 +119,9 @@ Set in Railway (values from your Staging secrets manager — never commit them):
 | `ANTHROPIC_API_KEY` | AI agent / flow auto-replies |
 | `ANTHROPIC_MODEL` | Optional model override |
 | `OPENAI_API_KEY` | Only if embeddings use OpenAI |
-| `MEDIA_STORAGE_PATH` | Default `./uploads` |
+| `MEDIA_STORAGE_PATH` | Default `./uploads` (local provider) |
+| `MEDIA_STORAGE_DRIVER` | `auto` (default), `local`, or `s3` — see Media section |
+| `S3_*` | Optional S3-compatible vars — leave empty on Staging unless switching |
 | `BROADCAST_BATCH_SIZE` | Optional |
 | `BROADCAST_BATCH_DELAY_MS` | Optional |
 | `PORT` | Usually set by Railway automatically |
@@ -166,6 +168,9 @@ Or via npm script:
 npm run prisma:deploy
 ```
 
+This applies all pending Prisma migrations (including `editedAt` on `Message`).  
+Confirm migrations are up to date after deploy; do not skip this step on a fresh Staging DB.
+
 **Do not** run:
 
 - `prisma migrate reset`
@@ -174,6 +179,12 @@ npm run prisma:deploy
 on Staging if `migrate deploy` is sufficient.
 
 On first boot, `bootstrapApp()` creates the Admin user from `DEFAULT_ADMIN_EMAIL` / `DEFAULT_ADMIN_PASSWORD` if missing.
+
+Optional sanity check (from repo, with Staging API URL + DB):
+
+```bash
+node server/scripts/p0-baseline-check.js
+```
 
 ---
 
@@ -296,16 +307,28 @@ Use a **test / sandbox** WhatsApp number — not Production.
 | WhatsApp test number | Meta WhatsApp → API Setup / test numbers |
 | Phone Number ID | API Setup |
 | WABA ID (Business Account ID) | Business / WhatsApp account |
-| Access Token | Temporary or system-user test token |
+| Access Token | Prefer a permanent **System User** token (not Graph Explorer temp tokens) |
 | Verify Token | You choose; must match `WHATSAPP_VERIFY_TOKEN` |
 | App Secret | App Dashboard → Settings → Basic |
 
-### Webhook
+### Token setup (important)
+
+1. Put initial values in Railway ENV **or** paste them in Admin → WhatsApp Channels.
+2. After a real token is saved on the channel row, **DB is source of truth**.
+3. Boot / `ensureDefaultWhatsAppChannel` **does not overwrite** a real DB token from ENV (`fb136f8`).
+4. Prefer updating the token in the UI (or DB) when rotating — do not assume ENV alone fixes an expired DB token.
+5. **Test Connection** must report **CONNECTED** before demo.
+
+### Webhook verification
 
 ```text
 Callback URL: https://RAILWAY_DOMAIN/webhook
 Verify token:  (same as WHATSAPP_VERIFY_TOKEN)
 ```
+
+1. Meta sends a GET challenge → Kadina echoes `hub.challenge` when verify token matches.
+2. With `NODE_ENV=production`, POST webhooks require valid `X-Hub-Signature-256` using `WHATSAPP_APP_SECRET`.
+3. Keep `ALLOW_INSECURE_WEBHOOK=false` (or unset) on Staging/Production.
 
 Subscribe to messages / message_status as required by your Meta app.
 
@@ -319,22 +342,70 @@ Subscribe to messages / message_status as required by your Meta app.
    - Outbound reply
    - Assignment / Agent reply
    - Timeline + Audit
+   - Interactive buttons / list
    - Multi-channel routing if more than one channel is configured
+
+### Restart verification
+
+After any Railway redeploy/restart:
+
+1. `GET /health` still OK
+2. Channel still **CONNECTED**
+3. Token in DB unchanged (Test Connection still works without re-pasting ENV)
+4. Send a test inbound + outbound message
+5. Confirm Socket.IO from Vercel frontend still connects (`CLIENT_ORIGIN` correct)
 
 ---
 
-## Media / uploads (Staging limitation)
+## Media storage configuration
 
-- Default driver is **local** filesystem under `MEDIA_STORAGE_PATH` (default `./uploads`).
-- Railway disks are ephemeral: files can be lost on redeploy. P0.2 added pluggable
-  `MEDIA_STORAGE_DRIVER=auto|local|s3` plus optional S3-compatible ENV
-  (`S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, …).
-- Leave S3 unset on Staging until you intentionally switch; existing `/uploads/...`
-  message URLs keep working via signed `/media/...` routes.
-- Access is via **signed** `/media/:filename` URLs (not public static browsing).
-- Railway filesystem may be **ephemeral**: files can disappear after redeploy/restart.
-- For Staging Demo this loss is **accepted**.
-- Signed Media architecture stays as-is (P1 — do not change now). No S3 in this phase.
+### Default (recommended for Staging until S3 is ready)
+
+- Driver: **local** filesystem under `MEDIA_STORAGE_PATH` (default `./uploads`).
+- Selection: `MEDIA_STORAGE_DRIVER=auto` (default) or `local`.
+- With `auto`, if S3 bucket/keys are **missing or placeholders**, Kadina stays on **local** and does **not** fail boot.
+- Clients load media via **HMAC-signed** `/media/:token?e=&s=` URLs (not public directory listing).
+- Existing message `mediaUrl` values like `/uploads/...` remain valid.
+
+### Local storage limitations on Railway
+
+- Railway disks are typically **ephemeral**: files under `./uploads` can disappear after redeploy/restart.
+- Staging Demo may accept this loss.
+- For durable production media, switch to S3-compatible storage (abstraction added in P0.2).
+
+### Enabling S3-compatible storage later
+
+Do **not** put real secrets in Git. Set on Railway (or your host) when ready:
+
+```text
+MEDIA_STORAGE_DRIVER=s3
+S3_ENDPOINT=
+S3_REGION=us-east-1
+S3_BUCKET=
+S3_ACCESS_KEY_ID=
+S3_SECRET_ACCESS_KEY=
+S3_FORCE_PATH_STYLE=true
+S3_PUBLIC_BASE_URL=
+S3_KEY_PREFIX=media/
+```
+
+| Variable | Purpose |
+|----------|---------|
+| `MEDIA_STORAGE_DRIVER` | `auto` \| `local` \| `s3` |
+| `S3_ENDPOINT` | Custom endpoint (MinIO, R2, etc.). Empty = AWS default |
+| `S3_REGION` | Region string |
+| `S3_BUCKET` | Bucket name |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | Credentials (never commit) |
+| `S3_FORCE_PATH_STYLE` | Usually `true` for MinIO-compatible endpoints |
+| `S3_PUBLIC_BASE_URL` | Optional CDN/public base; leave empty for private + signed access |
+| `S3_KEY_PREFIX` | Object key prefix (default `media/`) |
+
+Behavior notes:
+
+- `MEDIA_STORAGE_DRIVER=auto` → uses S3 only when bucket + real keys are present; otherwise **Local**.
+- `MEDIA_STORAGE_DRIVER=s3` with incomplete credentials → warns and **falls back to Local** (no crash).
+- New S3 objects are stored as `s3:<key>` in `Message.mediaUrl`; legacy `/uploads/...` still served from local disk when present.
+- Leave all `S3_*` empty on Staging until you intentionally migrate.
 
 ---
 
@@ -355,7 +426,8 @@ Subscribe to messages / message_status as required by your Meta app.
 - [ ] `WHATSAPP_APP_SECRET` set; `ALLOW_INSECURE_WEBHOOK=false`
 - [ ] `CLIENT_ORIGIN` exact Vercel URL (not `*`)
 - [ ] `PUBLIC_BASE_URL` / `VITE_*` use HTTPS Railway URL
-- [ ] Security P0 behavior unchanged
+- [ ] Media remains signed; S3 buckets stay private unless you consciously set a public base
+- [ ] Full release gate: `docs/KADINA_RELEASE_CHECKLIST.md`
 
 ---
 
@@ -374,3 +446,11 @@ Do **not** share:
 - Meta App Secret
 - Access tokens
 - Database URL
+- S3 secret keys
+
+---
+
+## Related docs
+
+- `docs/KADINA_WATI_GAP_REPORT.md` — feature status vs WATI-like SaaS
+- `docs/KADINA_RELEASE_CHECKLIST.md` — pre-release verification checklist
