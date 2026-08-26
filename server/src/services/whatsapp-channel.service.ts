@@ -103,7 +103,9 @@ export function sanitizeChannelError(message: string): string {
 
 /**
  * Ensures a default WhatsAppChannel exists from ClinicSettings/ENV.
- * Reloads `.env` from disk so token rotations apply without restarting Node.
+ * Seeds credentials only when the channel is missing or still has placeholders.
+ * Never overwrites a real DB accessToken/phoneNumberId on restart — that caused
+ * valid UI-saved tokens to be replaced by stale ENV values after every deploy.
  */
 export async function ensureDefaultWhatsAppChannel(): Promise<WhatsAppChannel> {
   dotenv.config({ override: true });
@@ -126,9 +128,6 @@ export async function ensureDefaultWhatsAppChannel(): Promise<WhatsAppChannel> {
     ? cfg.businessAccountId
     : existing?.businessAccountId ?? null;
 
-  const hasRealCreds =
-    !isPlaceholder(phoneNumberId) && !isPlaceholder(accessToken);
-
   if (!existing) {
     return prisma.whatsAppChannel.create({
       data: {
@@ -139,40 +138,33 @@ export async function ensureDefaultWhatsAppChannel(): Promise<WhatsAppChannel> {
         phoneNumberId,
         accessToken,
         businessAccountId,
-        status: hasRealCreds
-          ? WhatsAppChannelStatus.PENDING
-          : WhatsAppChannelStatus.PENDING,
+        status: WhatsAppChannelStatus.PENDING,
         isActive: true,
       },
     });
   }
 
-  // Refresh from ENV/ClinicSettings when:
-  // - channel still has placeholder credentials, OR
-  // - ENV/settings provide a different non-placeholder token/phone id (user rotated .env)
-  const cfgTokenFresh = !isPlaceholder(cfg.accessToken);
-  const cfgPhoneFresh = !isPlaceholder(cfg.phoneNumberId);
-  const shouldUpdateToken =
-    cfgTokenFresh &&
-    (isPlaceholder(existing.accessToken) ||
-      existing.accessToken !== cfg.accessToken);
-  const shouldUpdatePhoneId =
-    cfgPhoneFresh &&
-    (isPlaceholder(existing.phoneNumberId) ||
-      existing.phoneNumberId !== cfg.phoneNumberId);
+  // Seed placeholders only — do not clobber tokens saved via the Channels UI.
+  const shouldSeedToken =
+    isPlaceholder(existing.accessToken) && !isPlaceholder(cfg.accessToken);
+  const shouldSeedPhoneId =
+    isPlaceholder(existing.phoneNumberId) && !isPlaceholder(cfg.phoneNumberId);
   const shouldUpdateWaba =
-    !!businessAccountId && businessAccountId !== existing.businessAccountId;
+    !!businessAccountId &&
+    !existing.businessAccountId &&
+    businessAccountId !== existing.businessAccountId;
 
-  if (shouldUpdateToken || shouldUpdatePhoneId || shouldUpdateWaba) {
+  if (shouldSeedToken || shouldSeedPhoneId || shouldUpdateWaba) {
     return prisma.whatsAppChannel.update({
       where: { id: existing.id },
       data: {
-        ...(shouldUpdatePhoneId ? { phoneNumberId: cfg.phoneNumberId } : {}),
-        ...(shouldUpdateToken ? { accessToken: cfg.accessToken } : {}),
+        ...(shouldSeedPhoneId ? { phoneNumberId: cfg.phoneNumberId } : {}),
+        ...(shouldSeedToken ? { accessToken: cfg.accessToken } : {}),
         ...(shouldUpdateWaba ? { businessAccountId } : {}),
-        status: hasRealCreds
-          ? WhatsAppChannelStatus.PENDING
-          : existing.status,
+        // Keep CONNECTED if we only filled missing WABA; otherwise leave status.
+        ...(shouldSeedToken || shouldSeedPhoneId
+          ? { status: WhatsAppChannelStatus.PENDING }
+          : {}),
       },
     });
   }
@@ -263,13 +255,16 @@ export async function getChannelCredentials(
       adminMessage: "القناة معطّلة. فعّلها من الإعدادات ← أرقام واتساب.",
     });
   }
-  if (channel.status !== WhatsAppChannelStatus.CONNECTED) {
+  // Do not block outbound solely on cached status (PENDING/ERROR). Credentials
+  // are the source of truth; Meta rejects expired tokens on the send call.
+  if (channel.status === WhatsAppChannelStatus.DISCONNECTED) {
     const { WhatsAppSendError } = await import("./whatsapp-send-error");
     throw new WhatsAppSendError({
       code: "CHANNEL_NOT_CONNECTED",
       message: `WhatsApp channel status is ${channel.status}`,
       agentMessage: "قناة واتساب غير متصلة. راجع المسؤول.",
-      adminMessage: `حالة القناة: ${channel.status}. شغّل اختبار الاتصال وحدّث التوكن إن لزم.`,
+      adminMessage:
+        "القناة مفصولة. فعّلها وشغّل اختبار الاتصال من الإعدادات ← أرقام واتساب.",
     });
   }
   return {
@@ -415,9 +410,23 @@ export async function updateChannel(
   if (input.assignedUserId !== undefined) data.assignedUserId = input.assignedUserId;
   if (input.status !== undefined) data.status = input.status;
 
-  const updated = await prisma.whatsAppChannel.update({
+  const credsChanged =
+    (typeof data.accessToken === "string" && data.accessToken.length > 0) ||
+    typeof data.phoneNumberId === "string";
+
+  await prisma.whatsAppChannel.update({
     where: { id: existing.id },
     data,
+  });
+
+  // After token/phone id changes, validate against Meta immediately so the
+  // channel becomes CONNECTED without a separate Test click.
+  if (credsChanged) {
+    await testChannelConnection(id);
+  }
+
+  const updated = await prisma.whatsAppChannel.findUniqueOrThrow({
+    where: { id: existing.id },
     include: { _count: { select: { conversations: true } } },
   });
   return toPublicChannel(updated);
@@ -427,7 +436,7 @@ export async function setChannelActive(
   id: string,
   isActive: boolean
 ): Promise<WhatsAppChannelPublic> {
-  const updated = await prisma.whatsAppChannel.update({
+  await prisma.whatsAppChannel.update({
     where: { id },
     data: {
       isActive,
@@ -435,6 +444,14 @@ export async function setChannelActive(
         ? WhatsAppChannelStatus.PENDING
         : WhatsAppChannelStatus.DISCONNECTED,
     },
+  });
+
+  if (isActive) {
+    await testChannelConnection(id);
+  }
+
+  const updated = await prisma.whatsAppChannel.findUniqueOrThrow({
+    where: { id },
     include: { _count: { select: { conversations: true } } },
   });
   return toPublicChannel(updated);

@@ -148,9 +148,12 @@ export async function updateWhatsAppSettings(
             ...(body.whatsappBusinessAccountId !== undefined
               ? { businessAccountId: body.whatsappBusinessAccountId }
               : {}),
-            status: "PENDING",
           },
         });
+        const { testChannelConnection } = await import(
+          "../services/whatsapp-channel.service"
+        );
+        await testChannelConnection(DEFAULT_WHATSAPP_CHANNEL_ID);
       } catch (syncError) {
         console.error(
           "[settings] failed to sync WhatsAppChannel from ClinicSettings:",

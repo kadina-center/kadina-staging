@@ -218,6 +218,11 @@ export default function WhatsAppChannels() {
           <p className="mt-1 text-sm text-inbox-muted">
             إدارة أرقام واتساب متعددة للعيادة (حتى {MAX_CHANNELS} أرقام)
           </p>
+          <p className="mt-2 max-w-2xl text-xs leading-5 text-amber-200/90">
+            مهم: استخدم Access Token دائم من Meta Business → System Users (وليس
+            توكن Graph API Explorer المؤقت). احفظه هنا مرة واحدة؛ لن يُستبدل تلقائيًا
+            من Railway ENV بعد الحفظ.
+          </p>
         </div>
         <button
           type="button"
