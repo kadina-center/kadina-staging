@@ -1,8 +1,10 @@
 import type { Server as HttpServer } from "http";
-import jwt from "jsonwebtoken";
 import { Server, type Socket } from "socket.io";
 import { env } from "../config/env";
-import type { AuthUser } from "../middleware/auth";
+import {
+  resolveAuthUserFromJwt,
+  type AuthUser,
+} from "../middleware/auth";
 import { prisma } from "../lib/prisma";
 import {
   canAccessConversation,
@@ -128,23 +130,24 @@ export function initSocket(httpServer: HttpServer): Server {
   });
 
   io.use((socket, next) => {
-    try {
-      const token = socket.handshake.auth?.token as string | undefined;
-      if (!token) {
-        next(new Error("Authentication required"));
-        return;
+    void (async () => {
+      try {
+        const token = socket.handshake.auth?.token as string | undefined;
+        if (!token) {
+          next(new Error("Authentication required"));
+          return;
+        }
+        const user = await resolveAuthUserFromJwt(token);
+        if (!user) {
+          next(new Error("Invalid token"));
+          return;
+        }
+        socket.data.user = user;
+        next();
+      } catch {
+        next(new Error("Invalid token"));
       }
-      const payload = jwt.verify(token, env.JWT_SECRET) as AuthUser;
-      socket.data.user = {
-        id: payload.id,
-        name: payload.name,
-        email: payload.email,
-        role: payload.role,
-      } as AuthUser;
-      next();
-    } catch {
-      next(new Error("Invalid token"));
-    }
+    })();
   });
 
   io.on("connection", (socket: Socket) => {
