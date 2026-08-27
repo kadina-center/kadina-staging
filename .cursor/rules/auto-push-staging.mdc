@@ -1,0 +1,14 @@
+---
+description: After completing requested code changes, commit and push to origin so staging redeploys.
+alwaysApply: true
+---
+
+# Staging auto-push
+
+When the user asks for product/code changes in this repo:
+
+1. Implement the change.
+2. Unless they explicitly say not to commit/push: create a git commit and `git push` to `origin` (usually `main`) so Railway/Vercel staging update.
+3. Follow the repo git commit protocol (status/diff/log, HEREDOC message, no secrets, no force push).
+4. After push, remind them briefly if a DB migration is needed (`npx prisma migrate deploy` on Railway) when a new Prisma migration was included.
+5. Do not push unrelated local WIP; only the files for the completed request.
