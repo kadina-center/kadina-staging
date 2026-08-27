@@ -259,18 +259,24 @@ model Campaign {
 }
 
 model CampaignRecipient {
-  id           String    @id @default(cuid())
-  campaignId   String
-  campaign     Campaign  @relation(fields: [campaignId], references: [id])
-  contactId    String
-  contact      Contact   @relation(fields: [contactId], references: [id])
-  status       String    @default("pending")
-  waMessageId  String?
-  errorMessage String?
-  sentAt       DateTime?
+  id             String    @id @default(cuid())
+  campaignId     String
+  campaign       Campaign  @relation(fields: [campaignId], references: [id])
+  contactId      String
+  contact        Contact   @relation(fields: [contactId], references: [id])
+  status         String    @default("pending")
+  waMessageId    String?
+  errorMessage   String?
+  sentAt         DateTime?
+  /// When an inbound reply was attributed to this campaign send (P1.1).
+  repliedAt      DateTime?
+  /// Inbound Message.id — unique so duplicate webhooks cannot double-count.
+  replyMessageId String?   @unique
 
   @@index([campaignId, status])
   @@index([waMessageId])
+  @@index([contactId, sentAt])
+  @@index([campaignId, repliedAt])
   @@unique([campaignId, contactId])
 }
 

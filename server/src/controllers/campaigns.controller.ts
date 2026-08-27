@@ -6,33 +6,14 @@ import {
   logAuditFromRequest,
 } from "../services/audit.service";
 import {
+  cancelCampaignScheduledJobs,
   cancelScheduledCampaignTimer,
   enqueueCampaignSend,
+  getCampaignStats,
+  retryFailedCampaignRecipients,
   scheduleCampaignSend,
 } from "../services/broadcast.service";
 import { emitCampaignProgress } from "../services/socket.service";
-
-async function recipientStats(campaignId: string) {
-  const grouped = await prisma.campaignRecipient.groupBy({
-    by: ["status"],
-    where: { campaignId },
-    _count: { _all: true },
-  });
-
-  const counts: Record<string, number> = {
-    pending: 0,
-    sent: 0,
-    delivered: 0,
-    read: 0,
-    failed: 0,
-  };
-  let total = 0;
-  for (const row of grouped) {
-    counts[row.status] = row._count._all;
-    total += row._count._all;
-  }
-  return { total, counts };
-}
 
 export async function listCampaigns(
   _req: Request,
@@ -58,7 +39,7 @@ export async function listCampaigns(
 
     const payload = await Promise.all(
       campaigns.map(async (campaign) => {
-        const stats = await recipientStats(campaign.id);
+        const stats = await getCampaignStats(campaign.id);
         return {
           id: campaign.id,
           name: campaign.name,
@@ -127,7 +108,7 @@ export async function getCampaign(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    const stats = await recipientStats(campaign.id);
+    const stats = await getCampaignStats(campaign.id);
 
     res.json({
       id: campaign.id,
@@ -249,7 +230,7 @@ export async function createCampaign(
       scheduleCampaignSend(campaign.id, scheduleDate);
     }
 
-    const stats = await recipientStats(campaign.id);
+    const stats = await getCampaignStats(campaign.id);
 
     res.status(201).json({
       id: campaign.id,
@@ -303,6 +284,11 @@ export async function sendCampaign(
       return;
     }
 
+    if (campaign.status === "cancelled") {
+      res.status(400).json({ error: "Campaign was cancelled" });
+      return;
+    }
+
     if (campaign.template.status !== "approved") {
       res.status(400).json({
         error: "Only approved templates can be sent in campaigns",
@@ -311,12 +297,18 @@ export async function sendCampaign(
     }
 
     const pending = await prisma.campaignRecipient.count({
-      where: { campaignId: id, status: "pending" },
+      where: {
+        campaignId: id,
+        status: { in: ["pending", "sending"] },
+      },
     });
     if (pending === 0) {
       res.status(400).json({ error: "No pending recipients to send" });
       return;
     }
+
+    cancelScheduledCampaignTimer(id);
+    await cancelCampaignScheduledJobs(id);
 
     await prisma.campaign.update({
       where: { id },
@@ -372,7 +364,11 @@ export async function pauseCampaign(
       data: { status: "paused" },
     });
 
-    emitCampaignProgress({ campaignId: id, status: "paused" });
+    emitCampaignProgress({
+      campaignId: id,
+      status: "paused",
+      ...(await getCampaignStats(id)),
+    });
     logAuditFromRequest(req, {
       action: AuditAction.STOP,
       entityType: AuditEntity.CAMPAIGN,
@@ -405,6 +401,11 @@ export async function resumeCampaign(
       res.status(400).json({ error: "Only paused campaigns can be resumed" });
       return;
     }
+
+    await prisma.campaignRecipient.updateMany({
+      where: { campaignId: id, status: "sending" },
+      data: { status: "pending" },
+    });
 
     const pending = await prisma.campaignRecipient.count({
       where: { campaignId: id, status: "pending" },
@@ -453,6 +454,7 @@ export async function cancelCampaign(
     }
 
     cancelScheduledCampaignTimer(id);
+    await cancelCampaignScheduledJobs(id);
 
     const updated = await prisma.campaign.update({
       where: { id },
@@ -460,11 +462,15 @@ export async function cancelCampaign(
     });
 
     await prisma.campaignRecipient.updateMany({
-      where: { campaignId: id, status: "pending" },
+      where: { campaignId: id, status: { in: ["pending", "sending"] } },
       data: { status: "cancelled", errorMessage: "Campaign cancelled" },
     });
 
-    emitCampaignProgress({ campaignId: id, status: "cancelled" });
+    emitCampaignProgress({
+      campaignId: id,
+      status: "cancelled",
+      ...(await getCampaignStats(id)),
+    });
     logAuditFromRequest(req, {
       action: AuditAction.DELETE,
       entityType: AuditEntity.CAMPAIGN,
@@ -478,5 +484,48 @@ export async function cancelCampaign(
   } catch (error) {
     console.error("[campaigns] cancel error:", error);
     res.status(500).json({ error: "Failed to cancel campaign" });
+  }
+}
+
+export async function retryCampaignFailed(
+  req: Request,
+  res: Response
+): Promise<void> {
+  try {
+    const { id } = req.params;
+    const campaign = await prisma.campaign.findUnique({ where: { id } });
+    if (!campaign) {
+      res.status(404).json({ error: "Campaign not found" });
+      return;
+    }
+
+    const { retried } = await retryFailedCampaignRecipients(id);
+
+    logAuditFromRequest(req, {
+      action: AuditAction.START,
+      entityType: AuditEntity.CAMPAIGN,
+      entityId: id,
+      oldValues: { status: campaign.status },
+      newValues: { status: "sending", retried },
+      metadata: { campaignId: id, reason: "retry_failed", retried },
+    });
+
+    res.json({
+      ok: true,
+      retried,
+      message:
+        retried === 0
+          ? "No failed recipients to retry"
+          : `Queued ${retried} failed recipient(s) for retry`,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to retry campaign";
+    if (message.includes("cancelled") || message.includes("not found")) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    console.error("[campaigns] retry failed error:", error);
+    res.status(500).json({ error: "Failed to retry failed recipients" });
   }
 }

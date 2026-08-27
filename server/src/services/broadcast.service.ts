@@ -1,5 +1,12 @@
 import { env } from "../config/env";
 import { prisma } from "../lib/prisma";
+import {
+  buildCampaignStats,
+  emptyStatusCounts,
+  pickReplyRecipient,
+  shouldApplyDeliveryStatus,
+  type CampaignStatsPayload,
+} from "./campaign-stats";
 import { enqueueScheduledJob, registerJobHandler } from "./scheduled-jobs.service";
 import { emitCampaignProgress } from "./socket.service";
 import { dispatchEvent } from "./webhook-dispatcher.service";
@@ -11,9 +18,8 @@ import {
 import { sendTemplateMessage } from "./whatsapp.service";
 
 /**
- * Simple in-app broadcast queue.
- * Processes one campaign at a time in batches to respect Meta rate limits.
- * Can later be swapped for Redis/Bull without changing controllers much.
+ * In-app broadcast queue (one campaign at a time) + durable ScheduledJob
+ * for scheduled starts. Batch size/delay respect Meta rate limits via ENV.
  */
 
 type QueueJob = {
@@ -23,37 +29,49 @@ type QueueJob = {
 const queue: QueueJob[] = [];
 let processing = false;
 const activeCampaignIds = new Set<string>();
+/** Soft in-process reminder only — persistence is ScheduledJob. */
 const scheduledTimers = new Map<string, NodeJS.Timeout>();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function getProgress(campaignId: string) {
+export async function getCampaignStats(
+  campaignId: string
+): Promise<CampaignStatsPayload> {
   const grouped = await prisma.campaignRecipient.groupBy({
     by: ["status"],
     where: { campaignId },
     _count: { _all: true },
   });
 
-  const counts: Record<string, number> = {
-    pending: 0,
-    sent: 0,
-    delivered: 0,
-    read: 0,
-    failed: 0,
-  };
-
+  const counts = emptyStatusCounts();
   let total = 0;
   for (const row of grouped) {
-    counts[row.status] = row._count._all;
+    if (row.status in counts) {
+      counts[row.status as keyof typeof counts] = row._count._all;
+    }
     total += row._count._all;
   }
 
-  const processed =
-    counts.sent + counts.delivered + counts.read + counts.failed;
+  const replied = await prisma.campaignRecipient.count({
+    where: { campaignId, repliedAt: { not: null } },
+  });
 
-  return { total, processed, counts };
+  return buildCampaignStats(total, counts, replied);
+}
+
+async function getProgress(campaignId: string) {
+  const stats = await getCampaignStats(campaignId);
+  const processed =
+    stats.funnel.sent + stats.funnel.failed + (stats.counts.cancelled || 0);
+  return {
+    total: stats.total,
+    processed,
+    counts: stats.counts,
+    funnel: stats.funnel,
+    rates: stats.rates,
+  };
 }
 
 async function processCampaign(campaignId: string): Promise<void> {
@@ -63,6 +81,14 @@ async function processCampaign(campaignId: string): Promise<void> {
   });
 
   if (!campaign) return;
+
+  if (
+    campaign.status === "cancelled" ||
+    campaign.status === "completed" ||
+    campaign.status === "paused"
+  ) {
+    return;
+  }
 
   if (!campaign.channelId || !campaign.channel?.isActive) {
     await prisma.campaign.update({
@@ -109,8 +135,6 @@ async function processCampaign(campaignId: string): Promise<void> {
   let hasMore = true;
   let interrupted = false;
   while (hasMore) {
-    // Re-check status each batch so pause()/cancel() can interrupt a run in
-    // progress without losing already-sent recipients.
     const current = await prisma.campaign.findUnique({
       where: { id: campaignId },
       select: { status: true },
@@ -133,6 +157,24 @@ async function processCampaign(campaignId: string): Promise<void> {
     }
 
     for (const recipient of batch) {
+      // Re-check campaign pause/cancel between recipients
+      const live = await prisma.campaign.findUnique({
+        where: { id: campaignId },
+        select: { status: true },
+      });
+      if (!live || live.status !== "sending") {
+        interrupted = true;
+        hasMore = false;
+        break;
+      }
+
+      // Atomic claim — prevents double-send on worker overlap / restart races
+      const claim = await prisma.campaignRecipient.updateMany({
+        where: { id: recipient.id, status: "pending" },
+        data: { status: "sending" },
+      });
+      if (claim.count === 0) continue;
+
       if (recipient.contact.optedOut) {
         await prisma.campaignRecipient.update({
           where: { id: recipient.id },
@@ -241,16 +283,20 @@ async function processCampaign(campaignId: string): Promise<void> {
       }
     }
 
-    // Rate-limit pause between batches (skip if no more pending)
     const remaining = await prisma.campaignRecipient.count({
       where: { campaignId, status: "pending" },
     });
-    if (remaining > 0) {
+    if (remaining > 0 && !interrupted) {
       await sleep(delayMs);
     }
   }
 
   if (interrupted) {
+    // Release any in-flight claims so resume/retry can pick them up
+    await prisma.campaignRecipient.updateMany({
+      where: { campaignId, status: "sending" },
+      data: { status: "pending" },
+    });
     const progress = await getProgress(campaignId);
     const finalStatus = await prisma.campaign.findUnique({
       where: { id: campaignId },
@@ -261,6 +307,15 @@ async function processCampaign(campaignId: string): Promise<void> {
       status: finalStatus?.status ?? "paused",
       ...progress,
     });
+    return;
+  }
+
+  const stranded = await prisma.campaignRecipient.updateMany({
+    where: { campaignId, status: "sending" },
+    data: { status: "pending" },
+  });
+  if (stranded.count > 0) {
+    enqueueCampaignSend(campaignId);
     return;
   }
 
@@ -338,25 +393,59 @@ export function scheduleCampaignSend(
   const existing = scheduledTimers.get(campaignId);
   if (existing) clearTimeout(existing);
 
+  // Soft in-process wake-up only. Durable source of truth = ScheduledJob.
   const delay = Math.max(0, scheduledAt.getTime() - Date.now());
-  const timer = setTimeout(() => {
-    scheduledTimers.delete(campaignId);
-    enqueueCampaignSend(campaignId);
-  }, delay);
+  if (delay <= 2_147_000_000) {
+    const timer = setTimeout(() => {
+      scheduledTimers.delete(campaignId);
+      // Only enqueue if still scheduled — durable job has the same gate.
+      void prisma.campaign
+        .findUnique({
+          where: { id: campaignId },
+          select: { status: true },
+        })
+        .then((c) => {
+          if (c?.status === "scheduled") enqueueCampaignSend(campaignId);
+        })
+        .catch(() => undefined);
+    }, delay);
+    scheduledTimers.set(campaignId, timer);
+  }
 
-  scheduledTimers.set(campaignId, timer);
-
-  // Durable fallback: if the process restarts before `delay` elapses, the
-  // in-memory timer is lost. The ScheduledJob poller will still pick this up.
   void enqueueScheduledJob("campaign.send", scheduledAt, { campaignId });
 }
 
-/** Cancels an in-memory scheduled send timer (used when a campaign is cancelled before it fires). */
 export function cancelScheduledCampaignTimer(campaignId: string): void {
   const existing = scheduledTimers.get(campaignId);
   if (existing) {
     clearTimeout(existing);
     scheduledTimers.delete(campaignId);
+  }
+}
+
+/** Mark pending durable schedule jobs for this campaign as done (cancel). */
+export async function cancelCampaignScheduledJobs(
+  campaignId: string
+): Promise<void> {
+  const pending = await prisma.scheduledJob.findMany({
+    where: { type: "campaign.send", status: "pending" },
+    select: { id: true, payloadJson: true },
+  });
+  for (const job of pending) {
+    try {
+      const payload = JSON.parse(job.payloadJson) as { campaignId?: string };
+      if (payload?.campaignId === campaignId) {
+        await prisma.scheduledJob.update({
+          where: { id: job.id },
+          data: {
+            status: "done",
+            lastError: "campaign cancelled",
+          },
+        });
+      }
+    } catch {
+      // ignore malformed
+    }
   }
 }
 
@@ -367,12 +456,35 @@ registerJobHandler("campaign.send", async (payload: { campaignId?: string }) => 
     where: { id: campaignId },
     select: { status: true },
   });
-  // Only fire if still scheduled — it may have already been sent, cancelled,
-  // or paused by the time this durable job runs.
   if (campaign && campaign.status === "scheduled") {
     enqueueCampaignSend(campaignId);
   }
 });
+
+/**
+ * After restart: release stranded recipient claims and re-queue campaigns
+ * left in `sending` so pending recipients continue (idempotent via claim).
+ */
+export async function resumeInterruptedCampaigns(): Promise<void> {
+  const released = await prisma.campaignRecipient.updateMany({
+    where: { status: "sending" },
+    data: { status: "pending" },
+  });
+  if (released.count > 0) {
+    console.log(
+      `[broadcast] Released ${released.count} stranded recipient claim(s)`
+    );
+  }
+
+  const stuck = await prisma.campaign.findMany({
+    where: { status: "sending" },
+    select: { id: true },
+  });
+  for (const c of stuck) {
+    console.log(`[broadcast] Re-queue interrupted campaign ${c.id}`);
+    enqueueCampaignSend(c.id);
+  }
+}
 
 export async function updateRecipientStatusByWaId(
   waMessageId: string,
@@ -391,6 +503,10 @@ export async function updateRecipientStatusByWaId(
     where: { waMessageId },
   });
   if (!recipient) return;
+
+  if (!shouldApplyDeliveryStatus(recipient.status, mapped)) {
+    return;
+  }
 
   await prisma.campaignRecipient.update({
     where: { id: recipient.id },
@@ -419,4 +535,148 @@ export async function updateRecipientStatusByWaId(
       },
     });
   }
+}
+
+/**
+ * Attribute an inbound message as a campaign reply (idempotent).
+ * Priority: reply-to waMessageId → latest eligible send within attribution window.
+ */
+export async function attributeCampaignReply(opts: {
+  contactId: string;
+  inboundMessageId: string;
+  replyToWaMessageId?: string | null;
+}): Promise<{ recipientId: string; campaignId: string } | null> {
+  const already = await prisma.campaignRecipient.findFirst({
+    where: { replyMessageId: opts.inboundMessageId },
+    select: { id: true, campaignId: true },
+  });
+  if (already) {
+    return { recipientId: already.id, campaignId: already.campaignId };
+  }
+
+  const windowMs = Math.max(1, env.CAMPAIGN_REPLY_WINDOW_HOURS) * 60 * 60 * 1000;
+  const since = new Date(Date.now() - windowMs);
+
+  const candidates = await prisma.campaignRecipient.findMany({
+    where: {
+      contactId: opts.contactId,
+      repliedAt: null,
+      sentAt: { not: null, gte: since },
+      status: { in: ["sent", "delivered", "read"] },
+    },
+    select: { id: true, waMessageId: true, sentAt: true, campaignId: true },
+    orderBy: { sentAt: "desc" },
+    take: 20,
+  });
+
+  const picked = pickReplyRecipient(
+    candidates,
+    opts.replyToWaMessageId
+  );
+  if (!picked) return null;
+
+  const full = candidates.find((c) => c.id === picked.id);
+  if (!full) return null;
+
+  try {
+    const result = await prisma.campaignRecipient.updateMany({
+      where: { id: full.id, repliedAt: null },
+      data: {
+        repliedAt: new Date(),
+        replyMessageId: opts.inboundMessageId,
+      },
+    });
+    if (result.count === 0) {
+      // Lost race or already attributed
+      const again = await prisma.campaignRecipient.findFirst({
+        where: { replyMessageId: opts.inboundMessageId },
+        select: { id: true, campaignId: true },
+      });
+      return again
+        ? { recipientId: again.id, campaignId: again.campaignId }
+        : null;
+    }
+  } catch (error) {
+    // Unique replyMessageId collision from concurrent webhook
+    const again = await prisma.campaignRecipient.findFirst({
+      where: { replyMessageId: opts.inboundMessageId },
+      select: { id: true, campaignId: true },
+    });
+    if (again) {
+      return { recipientId: again.id, campaignId: again.campaignId };
+    }
+    console.error("[broadcast] attributeCampaignReply error:", error);
+    return null;
+  }
+
+  emitCampaignProgress({
+    campaignId: full.campaignId,
+    recipientId: full.id,
+    contactId: opts.contactId,
+    recipientStatus: "replied",
+    ...(await getProgress(full.campaignId)),
+  });
+
+  void logTimeline({
+    contactId: opts.contactId,
+    eventType: TimelineEventType.CAMPAIGN_REPLIED,
+    title: "رد على حملة",
+    actor: actorAutomation("Campaign"),
+    metadata: {
+      campaignId: full.campaignId,
+      recipientId: full.id,
+      messageId: opts.inboundMessageId,
+      replyToWaMessageId: opts.replyToWaMessageId ?? null,
+    },
+  });
+
+  return { recipientId: full.id, campaignId: full.campaignId };
+}
+
+/**
+ * Reset failed recipients to pending and resume sending (does not re-send successes).
+ */
+export async function retryFailedCampaignRecipients(
+  campaignId: string
+): Promise<{ retried: number }> {
+  const campaign = await prisma.campaign.findUnique({
+    where: { id: campaignId },
+    select: { status: true },
+  });
+  if (!campaign) {
+    throw new Error("Campaign not found");
+  }
+  if (campaign.status === "cancelled") {
+    throw new Error("Cannot retry a cancelled campaign");
+  }
+
+  const result = await prisma.campaignRecipient.updateMany({
+    where: { campaignId, status: "failed" },
+    data: {
+      status: "pending",
+      errorMessage: null,
+      waMessageId: null,
+      sentAt: null,
+    },
+  });
+
+  if (result.count === 0) {
+    return { retried: 0 };
+  }
+
+  if (campaign.status !== "sending") {
+    await prisma.campaign.update({
+      where: { id: campaignId },
+      data: { status: "sending" },
+    });
+  }
+
+  enqueueCampaignSend(campaignId);
+  emitCampaignProgress({
+    campaignId,
+    status: "sending",
+    ...(await getProgress(campaignId)),
+  });
+
+  return { retried: result.count };
 }

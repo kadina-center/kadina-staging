@@ -12,6 +12,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "test:media": "ts-node --transpile-only scripts/test-media-storage.ts",
+    "test:campaigns": "ts-node --transpile-only scripts/test-campaign-stats.ts",
     "backup": "node scripts/backup-db.js",
     "restore:json": "node scripts/restore-json.js"
   },

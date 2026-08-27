@@ -11,10 +11,39 @@ function statusLabel(status: string): string {
     draft: "مسودة",
     scheduled: "مجدولة",
     sending: "جارٍ الإرسال",
+    paused: "متوقفة",
     completed: "مكتملة",
     failed: "فشلت",
+    cancelled: "ملغاة",
   };
   return map[status] || status;
+}
+
+function statusBadgeClass(status: string): string {
+  switch (status) {
+    case "draft":
+      return "bg-slate-700 text-slate-100";
+    case "scheduled":
+      return "bg-sky-900/60 text-sky-200";
+    case "sending":
+      return "bg-amber-900/50 text-amber-200";
+    case "paused":
+      return "bg-orange-900/50 text-orange-200";
+    case "completed":
+      return "bg-emerald-900/50 text-emerald-200";
+    case "cancelled":
+      return "bg-zinc-700 text-zinc-200";
+    case "failed":
+      return "bg-red-900/50 text-red-200";
+    default:
+      return "bg-inbox-hover text-inbox-text";
+  }
+}
+
+function fmtPct(n: number, total: number): string {
+  if (!total) return "0%";
+  const p = (n / total) * 100;
+  return `${p.toFixed(p >= 10 ? 0 : 1)}%`;
 }
 
 export default function Campaigns({ onCreate, onOpenReport }: Props) {
@@ -66,6 +95,7 @@ export default function Campaigns({ onCreate, onOpenReport }: Props) {
                 <th className="px-4 py-3 text-right font-medium">الاسم</th>
                 <th className="px-4 py-3 text-right font-medium">القالب</th>
                 <th className="px-4 py-3 text-right font-medium">المستلمون</th>
+                <th className="px-4 py-3 text-right font-medium">أُرسل / رد</th>
                 <th className="px-4 py-3 text-right font-medium">الحالة</th>
                 <th className="px-4 py-3 text-right font-medium">تاريخ الإنشاء</th>
                 <th className="px-4 py-3 text-right font-medium">تقرير</th>
@@ -75,38 +105,60 @@ export default function Campaigns({ onCreate, onOpenReport }: Props) {
               {campaigns.length === 0 && (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={7}
                     className="px-4 py-8 text-center text-inbox-muted"
                   >
                     لا توجد حملات بعد
                   </td>
                 </tr>
               )}
-              {campaigns.map((campaign) => (
-                <tr
-                  key={campaign.id}
-                  className="border-t border-inbox-border bg-inbox-bg/40"
-                >
-                  <td className="px-4 py-3 font-medium">{campaign.name}</td>
-                  <td className="px-4 py-3" dir="ltr">
-                    {campaign.template.name}
-                  </td>
-                  <td className="px-4 py-3">{campaign.recipientCount}</td>
-                  <td className="px-4 py-3">{statusLabel(campaign.status)}</td>
-                  <td className="px-4 py-3 text-inbox-muted">
-                    {new Date(campaign.createdAt).toLocaleString("ar-SA")}
-                  </td>
-                  <td className="px-4 py-3">
-                    <button
-                      type="button"
-                      onClick={() => onOpenReport(campaign.id)}
-                      className="rounded-md bg-inbox-hover px-2 py-1 text-xs hover:bg-inbox-border"
-                    >
-                      عرض
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {campaigns.map((campaign) => {
+                const total = campaign.stats.total || campaign.recipientCount;
+                const sent =
+                  campaign.stats.funnel?.sent ??
+                  (campaign.stats.counts.sent || 0) +
+                    (campaign.stats.counts.delivered || 0) +
+                    (campaign.stats.counts.read || 0);
+                const replied =
+                  campaign.stats.funnel?.replied ??
+                  campaign.stats.counts.replied ??
+                  0;
+                return (
+                  <tr
+                    key={campaign.id}
+                    className="border-t border-inbox-border bg-inbox-bg/40"
+                  >
+                    <td className="px-4 py-3 font-medium">{campaign.name}</td>
+                    <td className="px-4 py-3" dir="ltr">
+                      {campaign.template.name}
+                    </td>
+                    <td className="px-4 py-3">{campaign.recipientCount}</td>
+                    <td className="px-4 py-3 text-xs text-inbox-muted">
+                      {sent}/{total} ({fmtPct(sent, total)}) · رد{" "}
+                      {replied} ({fmtPct(replied, total)})
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`rounded-md px-2 py-0.5 text-xs ${statusBadgeClass(campaign.status)}`}
+                      >
+                        {statusLabel(campaign.status)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-inbox-muted">
+                      {new Date(campaign.createdAt).toLocaleString("ar-SA")}
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        type="button"
+                        onClick={() => onOpenReport(campaign.id)}
+                        className="rounded-md bg-inbox-hover px-2 py-1 text-xs hover:bg-inbox-border"
+                      >
+                        عرض
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

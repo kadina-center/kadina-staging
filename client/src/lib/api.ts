@@ -1214,6 +1214,20 @@ export type ContactListDetail = ContactListSummary & {
 export type CampaignStats = {
   total: number;
   counts: Record<string, number>;
+  funnel?: {
+    sent: number;
+    delivered: number;
+    read: number;
+    failed: number;
+    replied: number;
+  };
+  rates?: {
+    sent: number;
+    delivered: number;
+    read: number;
+    failed: number;
+    replied: number;
+  };
 };
 
 export type CampaignSummary = {
@@ -1248,6 +1262,8 @@ export type CampaignRecipient = {
   waMessageId: string | null;
   errorMessage: string | null;
   sentAt: string | null;
+  repliedAt?: string | null;
+  replyMessageId?: string | null;
   contact: {
     id: string;
     phone: string;
@@ -1286,6 +1302,8 @@ export type CampaignProgressEvent = {
   total?: number;
   processed?: number;
   counts?: Record<string, number>;
+  funnel?: CampaignStats["funnel"];
+  rates?: CampaignStats["rates"];
 };
 
 export function getContactLists(): Promise<ContactListSummary[]> {
@@ -1350,6 +1368,26 @@ export function sendCampaign(
   id: string
 ): Promise<{ ok: boolean; message: string; pending: number }> {
   return request(`/campaigns/${id}/send`, { method: "POST" });
+}
+
+export function pauseCampaign(id: string): Promise<{ ok: boolean }> {
+  return request(`/campaigns/${id}/pause`, { method: "POST" });
+}
+
+export function resumeCampaign(
+  id: string
+): Promise<{ ok: boolean; pending?: number }> {
+  return request(`/campaigns/${id}/resume`, { method: "POST" });
+}
+
+export function cancelCampaign(id: string): Promise<{ ok: boolean }> {
+  return request(`/campaigns/${id}/cancel`, { method: "POST" });
+}
+
+export function retryFailedCampaign(
+  id: string
+): Promise<{ ok: boolean; retried: number; message?: string }> {
+  return request(`/campaigns/${id}/retry-failed`, { method: "POST" });
 }
 
 export type FlowStep = {
@@ -1569,9 +1607,17 @@ export type CampaignAnalytics = {
   template: { id: string; name: string };
   total: number;
   counts: Record<string, number>;
+  funnel?: {
+    sent: number;
+    delivered: number;
+    read: number;
+    failed: number;
+    replied: number;
+  };
   deliveryRate: number;
   readRate: number;
   failureRate: number;
+  replyRate?: number;
   topFailureReasons: Array<{ reason: string; count: number }>;
 };
 

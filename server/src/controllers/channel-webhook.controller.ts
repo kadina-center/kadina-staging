@@ -12,6 +12,7 @@ import {
 import { touchConversation } from "../services/conversation.service";
 import { maybeStartFlowForInbound } from "../services/flow-engine.service";
 import { saveMediaBuffer } from "../services/media-storage.service";
+import { attributeCampaignReply } from "../services/broadcast.service";
 import {
   emitConversationUpdated,
   emitMessageStatus,
@@ -517,6 +518,12 @@ async function processInboundMessages(
         },
       });
 
+      void attributeCampaignReply({
+        contactId: contact.id,
+        inboundMessageId: saved.id,
+        replyToWaMessageId,
+      });
+
       emitNewMessage({
         message: saved,
         contact: {
@@ -655,6 +662,12 @@ async function processInboundMessages(
       }
       throw createError;
     }
+
+    void attributeCampaignReply({
+      contactId: contact.id,
+      inboundMessageId: saved.id,
+      replyToWaMessageId,
+    });
 
     if (whatsAppChannelId) {
       void touchChannelMessage(whatsAppChannelId);

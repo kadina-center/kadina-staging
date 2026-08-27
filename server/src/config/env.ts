@@ -52,6 +52,9 @@ export const env = {
   BROADCAST_BATCH_SIZE: Number(readEnv("BROADCAST_BATCH_SIZE", "20")) || 20,
   BROADCAST_BATCH_DELAY_MS:
     Number(readEnv("BROADCAST_BATCH_DELAY_MS", "5000")) || 5000,
+  /** Hours after campaign send during which an inbound message counts as a reply. */
+  CAMPAIGN_REPLY_WINDOW_HOURS:
+    Number(readEnv("CAMPAIGN_REPLY_WINDOW_HOURS", "24")) || 24,
   ANTHROPIC_API_KEY: readEnv("ANTHROPIC_API_KEY", PLACEHOLDER),
   ANTHROPIC_MODEL: readEnv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
   EMBEDDING_PROVIDER: readEnv("EMBEDDING_PROVIDER", "local"),

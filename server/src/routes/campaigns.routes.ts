@@ -6,6 +6,7 @@ import {
   listCampaigns,
   pauseCampaign,
   resumeCampaign,
+  retryCampaignFailed,
   sendCampaign,
 } from "../controllers/campaigns.controller";
 import { requireAdmin } from "../middleware/auth";
@@ -20,5 +21,6 @@ router.post("/:id/send", requireAdmin, sendCampaign);
 router.post("/:id/pause", requireAdmin, pauseCampaign);
 router.post("/:id/resume", requireAdmin, resumeCampaign);
 router.post("/:id/cancel", requireAdmin, cancelCampaign);
+router.post("/:id/retry-failed", requireAdmin, retryCampaignFailed);
 
 export default router;

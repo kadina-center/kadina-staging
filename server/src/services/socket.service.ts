@@ -363,6 +363,20 @@ export type CampaignProgressPayload = {
   total?: number;
   processed?: number;
   counts?: Record<string, number>;
+  funnel?: {
+    sent: number;
+    delivered: number;
+    read: number;
+    failed: number;
+    replied: number;
+  };
+  rates?: {
+    sent: number;
+    delivered: number;
+    read: number;
+    failed: number;
+    replied: number;
+  };
 };
 
 export function emitCampaignProgress(payload: CampaignProgressPayload): void {

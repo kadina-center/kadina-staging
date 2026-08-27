@@ -166,6 +166,10 @@ async function startWithRetry(maxAttempts = 5): Promise<void> {
       );
       registerFlowJobHandlers();
       startScheduledJobRunner();
+      const { resumeInterruptedCampaigns } = await import(
+        "./services/broadcast.service"
+      );
+      await resumeInterruptedCampaigns();
       return;
     } catch (error) {
       lastError = error;

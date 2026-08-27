@@ -277,7 +277,7 @@ export async function getCampaignPerformanceStats(campaignId?: string) {
     include: {
       template: { select: { id: true, name: true } },
       recipients: {
-        select: { status: true, errorMessage: true },
+        select: { status: true, errorMessage: true, repliedAt: true },
       },
     },
     orderBy: { createdAt: "desc" },
@@ -290,12 +290,16 @@ export async function getCampaignPerformanceStats(campaignId?: string) {
       delivered: 0,
       read: 0,
       failed: 0,
+      cancelled: 0,
+      sending: 0,
     };
     const errorReasons = new Map<string, number>();
+    let replied = 0;
 
     for (const r of campaign.recipients) {
       const key = r.status as keyof typeof counts;
       if (key in counts) counts[key] += 1;
+      if (r.repliedAt) replied += 1;
       if (r.status === "failed" && r.errorMessage) {
         errorReasons.set(
           r.errorMessage,
@@ -314,10 +318,18 @@ export async function getCampaignPerformanceStats(campaignId?: string) {
       status: campaign.status,
       template: campaign.template,
       total,
-      counts,
+      counts: { ...counts, replied },
+      funnel: {
+        sent: sentLike,
+        delivered: deliveredLike,
+        read: counts.read,
+        failed: counts.failed,
+        replied,
+      },
       deliveryRate: sentLike ? deliveredLike / sentLike : 0,
       readRate: deliveredLike ? counts.read / deliveredLike : 0,
       failureRate: total ? counts.failed / total : 0,
+      replyRate: total ? replied / total : 0,
       topFailureReasons: [...errorReasons.entries()]
         .sort((a, b) => b[1] - a[1])
         .slice(0, 5)

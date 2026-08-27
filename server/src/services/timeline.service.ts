@@ -43,6 +43,7 @@ export const TimelineEventType = {
   CAMPAIGN_SENT: "CAMPAIGN_SENT",
   CAMPAIGN_DELIVERED: "CAMPAIGN_DELIVERED",
   CAMPAIGN_FAILED: "CAMPAIGN_FAILED",
+  CAMPAIGN_REPLIED: "CAMPAIGN_REPLIED",
   FLOW_STARTED: "FLOW_STARTED",
   FLOW_COMPLETED: "FLOW_COMPLETED",
   WELCOME_SENT: "WELCOME_SENT",
@@ -77,6 +78,7 @@ export const TIMELINE_FILTER_GROUPS: Record<string, string[]> = {
     TimelineEventType.CAMPAIGN_SENT,
     TimelineEventType.CAMPAIGN_DELIVERED,
     TimelineEventType.CAMPAIGN_FAILED,
+    TimelineEventType.CAMPAIGN_REPLIED,
   ],
   automation: [
     TimelineEventType.FLOW_STARTED,
