@@ -30,10 +30,15 @@ import usersRoutes from "./routes/users.routes";
 import webhookRoutes from "./routes/webhook.routes";
 import webhookSubscriptionsRoutes from "./routes/webhook-subscriptions.routes";
 import whatsappChannelsRoutes from "./routes/whatsapp-channels.routes";
+import { createGracefulShutdownHandler } from "./lib/graceful-shutdown";
+import { prisma } from "./lib/prisma";
 import { logSystemError } from "./services/error-log.service";
 import { registerFlowJobHandlers } from "./services/flow-engine.service";
-import { startScheduledJobRunner } from "./services/scheduled-jobs.service";
-import { initSocket } from "./services/socket.service";
+import {
+  startScheduledJobRunner,
+  stopScheduledJobRunner,
+} from "./services/scheduled-jobs.service";
+import { closeSocket, initSocket } from "./services/socket.service";
 
 const app = express();
 
@@ -132,6 +137,30 @@ app.use(
 
 const server = http.createServer(app);
 initSocket(server);
+
+function closeHttpServer(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
+const { shutdown: gracefulShutdown } = createGracefulShutdownHandler({
+  stopScheduledJobRunner,
+  closeSocket,
+  closeHttpServer,
+  disconnectPrisma: () => prisma.$disconnect(),
+  exit: (code) => process.exit(code),
+});
+
+process.on("SIGTERM", () => {
+  void gracefulShutdown("SIGTERM");
+});
+process.on("SIGINT", () => {
+  void gracefulShutdown("SIGINT");
+});
 
 function listenAsync(port: number): Promise<void> {
   return new Promise((resolve, reject) => {

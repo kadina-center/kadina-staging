@@ -240,6 +240,21 @@ export function getIO(): Server {
   return io;
 }
 
+/** Disconnect clients and close the Socket.IO server (idempotent if never started). */
+export function closeSocket(): Promise<void> {
+  if (!io) return Promise.resolve();
+  const current = io;
+  io = null;
+  typingByConversation.clear();
+  viewingByConversation.clear();
+  return new Promise((resolve, reject) => {
+    current.close((err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+  });
+}
+
 export function emitNewMessage(
   payload: NewMessagePayload,
   assignedToId?: string | null
