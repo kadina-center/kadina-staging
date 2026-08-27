@@ -8,7 +8,7 @@ import { requireAdmin } from "../middleware/auth";
 
 const router = Router();
 
-router.get("/overview", getOverview);
+router.get("/overview", requireAdmin, getOverview);
 /** Campaign performance is admin ops data */
 router.get("/campaigns/:id", requireAdmin, getCampaignAnalytics);
 /** CSV includes phone numbers — admin only */

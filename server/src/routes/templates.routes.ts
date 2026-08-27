@@ -4,11 +4,12 @@ import {
   listTemplates,
   syncTemplateStatus,
 } from "../controllers/templates.controller";
+import { requireAdmin } from "../middleware/auth";
 
 const router = Router();
 
 router.get("/", listTemplates);
-router.post("/", createTemplateHandler);
-router.post("/:id/sync-status", syncTemplateStatus);
+router.post("/", requireAdmin, createTemplateHandler);
+router.post("/:id/sync-status", requireAdmin, syncTemplateStatus);
 
 export default router;

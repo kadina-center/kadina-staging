@@ -11,7 +11,7 @@ import { validateBody } from "../middleware/validate";
 
 const router = Router();
 
-router.get("/", requireAuth, getSettings);
+router.get("/", requireAuth, requireAdmin, getSettings);
 router.patch(
   "/clinic",
   requireAuth,

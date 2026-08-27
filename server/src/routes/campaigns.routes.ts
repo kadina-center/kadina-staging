@@ -13,8 +13,7 @@ import { requireAdmin } from "../middleware/auth";
 
 const router = Router();
 
-/** List summaries OK for authenticated staff; detail with recipient phones = admin only */
-router.get("/", listCampaigns);
+router.get("/", requireAdmin, listCampaigns);
 router.get("/:id", requireAdmin, getCampaign);
 router.post("/", requireAdmin, createCampaign);
 router.post("/:id/send", requireAdmin, sendCampaign);

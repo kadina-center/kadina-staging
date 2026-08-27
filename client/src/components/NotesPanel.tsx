@@ -75,8 +75,8 @@ export default function NotesPanel({
   }, []);
 
   useEffect(() => {
-    void loadUsers().catch((err) => {
-      setError(err instanceof Error ? err.message : "فشل تحميل المستخدمين");
+    void loadUsers().catch(() => {
+      setUsers([]);
     });
   }, [loadUsers]);
 

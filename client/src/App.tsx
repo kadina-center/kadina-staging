@@ -37,7 +37,17 @@ type Page =
   | "health"
   | "audit";
 
-const NAV: { id: Page; label: string }[] = [
+const AGENT_NAV: { id: Page; label: string }[] = [
+  { id: "inbox", label: "صندوق الوارد" },
+  { id: "templates", label: "القوالب" },
+  { id: "lists", label: "القوائم" },
+  { id: "flows", label: "الروبوت" },
+  { id: "knowledge", label: "المعرفة" },
+  { id: "ai-settings", label: "الذكاء" },
+  { id: "integrations", label: "التكاملات" },
+];
+
+const ADMIN_NAV: { id: Page; label: string }[] = [
   { id: "inbox", label: "صندوق الوارد" },
   { id: "analytics", label: "التقارير" },
   { id: "templates", label: "القوالب" },
@@ -48,19 +58,25 @@ const NAV: { id: Page; label: string }[] = [
   { id: "ai-settings", label: "الذكاء" },
   { id: "settings", label: "الإعدادات" },
   { id: "integrations", label: "التكاملات" },
+  { id: "whatsapp-channels", label: "أرقام واتساب" },
+  { id: "audit", label: "التدقيق" },
+  { id: "health", label: "حالة النظام" },
 ];
 
 function buildNav(role?: string): { id: Page; label: string }[] {
-  if (role === "admin") {
-    return [
-      ...NAV,
-      { id: "whatsapp-channels", label: "أرقام واتساب" },
-      { id: "audit", label: "التدقيق" },
-      { id: "health", label: "حالة النظام" },
-    ];
-  }
-  return NAV;
+  return role === "admin" ? ADMIN_NAV : AGENT_NAV;
 }
+
+const ADMIN_ONLY_PAGES = new Set<Page>([
+  "analytics",
+  "campaigns",
+  "campaign-builder",
+  "campaign-report",
+  "settings",
+  "whatsapp-channels",
+  "audit",
+  "health",
+]);
 
 export default function App() {
   const [token, setTokenState] = useState<string | null>(() => getToken());
@@ -108,6 +124,13 @@ export default function App() {
     window.addEventListener("kadina:logout", onLogout);
     return () => window.removeEventListener("kadina:logout", onLogout);
   }, [handleLogout]);
+
+  useEffect(() => {
+    if (user?.role === "admin") return;
+    if (ADMIN_ONLY_PAGES.has(page)) {
+      setPage("inbox");
+    }
+  }, [user?.role, page]);
 
   if (!token) {
     return (
@@ -170,12 +193,18 @@ export default function App() {
       </nav>
       <div className="min-h-0 flex-1 overflow-hidden">
         {page === "inbox" && <Inbox />}
-        {page === "analytics" && <Analytics />}
+        {page === "analytics" && user?.role === "admin" && <Analytics />}
         {page === "templates" && <Templates />}
         {page === "lists" && (
-          <ContactLists onOpenBuilder={() => setPage("campaign-builder")} />
+          <ContactLists
+            onOpenBuilder={
+              user?.role === "admin"
+                ? () => setPage("campaign-builder")
+                : undefined
+            }
+          />
         )}
-        {page === "campaigns" && (
+        {page === "campaigns" && user?.role === "admin" && (
           <Campaigns
             onCreate={() => setPage("campaign-builder")}
             onOpenReport={(id) => {
@@ -184,7 +213,7 @@ export default function App() {
             }}
           />
         )}
-        {page === "campaign-builder" && (
+        {page === "campaign-builder" && user?.role === "admin" && (
           <CampaignBuilder
             onCancel={() => setPage("campaigns")}
             onDone={(id) => {
@@ -193,7 +222,7 @@ export default function App() {
             }}
           />
         )}
-        {page === "campaign-report" && reportId && (
+        {page === "campaign-report" && reportId && user?.role === "admin" && (
           <CampaignReport
             campaignId={reportId}
             onBack={() => setPage("campaigns")}
@@ -220,7 +249,7 @@ export default function App() {
         )}
         {page === "knowledge" && <KnowledgeBase />}
         {page === "ai-settings" && <AiSettingsPage />}
-        {page === "settings" && (
+        {page === "settings" && user?.role === "admin" && (
           <Settings
             user={user}
             onNavigateToChannels={() => setPage("whatsapp-channels")}
