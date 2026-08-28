@@ -11,6 +11,47 @@ declare global {
   }
 }
 
+export type MetaSignatureCheckResult =
+  | { ok: true }
+  | { ok: false; reason: "missing_signature" | "missing_raw_body" | "invalid_signature" };
+
+/**
+ * Pure Meta X-Hub-Signature-256 check over exact raw bytes.
+ * Never reconstructs a body from parsed JSON.
+ */
+export function checkMetaSignature(opts: {
+  appSecret: string;
+  signatureHeader: string | undefined;
+  rawBody: Buffer | undefined;
+}): MetaSignatureCheckResult {
+  const signatureHeader = opts.signatureHeader;
+  if (!signatureHeader || !signatureHeader.startsWith("sha256=")) {
+    return { ok: false, reason: "missing_signature" };
+  }
+
+  if (opts.rawBody === undefined) {
+    return { ok: false, reason: "missing_raw_body" };
+  }
+
+  const provided = signatureHeader.slice("sha256=".length);
+  const expected = crypto
+    .createHmac("sha256", opts.appSecret)
+    .update(opts.rawBody)
+    .digest("hex");
+
+  const providedBuf = Buffer.from(provided, "utf8");
+  const expectedBuf = Buffer.from(expected, "utf8");
+
+  const valid =
+    providedBuf.length === expectedBuf.length &&
+    crypto.timingSafeEqual(providedBuf, expectedBuf);
+
+  if (!valid) {
+    return { ok: false, reason: "invalid_signature" };
+  }
+  return { ok: true };
+}
+
 /**
  * Verifies Meta `X-Hub-Signature-256`.
  * Always required when WHATSAPP_APP_SECRET is configured.
@@ -27,30 +68,22 @@ export function verifyMetaSignature(
     return;
   }
 
-  const signatureHeader = req.header("x-hub-signature-256");
-  if (!signatureHeader || !signatureHeader.startsWith("sha256=")) {
-    console.warn("[webhook] Missing or malformed X-Hub-Signature-256 header");
-    res.status(401).json({ error: "Invalid webhook signature" });
-    return;
-  }
+  const result = checkMetaSignature({
+    appSecret: env.WHATSAPP_APP_SECRET,
+    signatureHeader: req.header("x-hub-signature-256") ?? undefined,
+    rawBody: req.rawBody,
+  });
 
-  const provided = signatureHeader.slice("sha256=".length);
-  const rawBody = req.rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
-
-  const expected = crypto
-    .createHmac("sha256", env.WHATSAPP_APP_SECRET)
-    .update(rawBody)
-    .digest("hex");
-
-  const providedBuf = Buffer.from(provided, "utf8");
-  const expectedBuf = Buffer.from(expected, "utf8");
-
-  const valid =
-    providedBuf.length === expectedBuf.length &&
-    crypto.timingSafeEqual(providedBuf, expectedBuf);
-
-  if (!valid) {
-    console.warn("[webhook] Invalid X-Hub-Signature-256 — rejecting payload");
+  if (!result.ok) {
+    if (result.reason === "missing_raw_body") {
+      console.warn(
+        "[webhook] Missing rawBody — rejecting (HMAC requires exact Meta payload bytes)"
+      );
+    } else if (result.reason === "missing_signature") {
+      console.warn("[webhook] Missing or malformed X-Hub-Signature-256 header");
+    } else {
+      console.warn("[webhook] Invalid X-Hub-Signature-256 — rejecting payload");
+    }
     res.status(401).json({ error: "Invalid webhook signature" });
     return;
   }

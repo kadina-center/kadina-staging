@@ -7,7 +7,7 @@ import { requireAdmin } from "../middleware/auth";
 
 const router = Router();
 
-router.get("/", getAiSettings);
+router.get("/", requireAdmin, getAiSettings);
 router.patch("/", requireAdmin, updateAiSettings);
 
 export default router;

@@ -42,8 +42,6 @@ const AGENT_NAV: { id: Page; label: string }[] = [
   { id: "templates", label: "القوالب" },
   { id: "lists", label: "القوائم" },
   { id: "flows", label: "الروبوت" },
-  { id: "knowledge", label: "المعرفة" },
-  { id: "ai-settings", label: "الذكاء" },
   { id: "integrations", label: "التكاملات" },
 ];
 
@@ -72,6 +70,7 @@ const ADMIN_ONLY_PAGES = new Set<Page>([
   "campaigns",
   "campaign-builder",
   "campaign-report",
+  "knowledge",
   "settings",
   "whatsapp-channels",
   "audit",
@@ -247,7 +246,9 @@ export default function App() {
             onSaved={(id) => setFlowId(id)}
           />
         )}
-        {page === "knowledge" && <KnowledgeBase />}
+        {page === "knowledge" && user?.role === "admin" && (
+          <KnowledgeBase isAdmin />
+        )}
         {page === "ai-settings" && <AiSettingsPage />}
         {page === "settings" && user?.role === "admin" && (
           <Settings

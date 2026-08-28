@@ -6,9 +6,15 @@ import { validateBody } from "../middleware/validate";
 
 const router = Router();
 
-const loginLimiter = rateLimit({
+/** Login brute-force guard — do not reuse for unrelated endpoints. */
+export const LOGIN_RATE_LIMIT = {
   windowMs: 15 * 60 * 1000,
-  max: 30,
+  max: 10,
+} as const;
+
+const loginLimiter = rateLimit({
+  windowMs: LOGIN_RATE_LIMIT.windowMs,
+  max: LOGIN_RATE_LIMIT.max,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many login attempts" },

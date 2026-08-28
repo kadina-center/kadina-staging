@@ -10,6 +10,7 @@ import {
   cancelScheduledCampaignTimer,
   enqueueCampaignSend,
   getCampaignStats,
+  recoverSendingRecipients,
   retryFailedCampaignRecipients,
   scheduleCampaignSend,
 } from "../services/broadcast.service";
@@ -402,10 +403,7 @@ export async function resumeCampaign(
       return;
     }
 
-    await prisma.campaignRecipient.updateMany({
-      where: { campaignId: id, status: "sending" },
-      data: { status: "pending" },
-    });
+    await recoverSendingRecipients({ campaignId: id });
 
     const pending = await prisma.campaignRecipient.count({
       where: { campaignId: id, status: "pending" },
@@ -455,6 +453,9 @@ export async function cancelCampaign(
 
     cancelScheduledCampaignTimer(id);
     await cancelCampaignScheduledJobs(id);
+
+    // Heal any Meta-accepted sends before cancelling remaining work.
+    await recoverSendingRecipients({ campaignId: id });
 
     const updated = await prisma.campaign.update({
       where: { id },

@@ -9,7 +9,7 @@ import { requireAdmin } from "../middleware/auth";
 
 const router = Router();
 
-router.get("/", listSubscriptions);
+router.get("/", requireAdmin, listSubscriptions);
 router.post("/", requireAdmin, createSubscription);
 router.delete("/:id", requireAdmin, deleteSubscription);
 router.post("/:id/test", requireAdmin, testSubscription);

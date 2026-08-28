@@ -7,6 +7,13 @@ import {
   shouldApplyDeliveryStatus,
   type CampaignStatsPayload,
 } from "./campaign-stats";
+import {
+  CAMPAIGN_INDETERMINATE_SUBMIT_ERROR,
+  CAMPAIGN_SUBMIT_STARTED_MARKER,
+  classifyPostSubmitCatch,
+  classifySendingRecipientRecovery,
+  isAutoRetryableFailedRecipient,
+} from "./campaign-send-recovery";
 import { enqueueScheduledJob, registerJobHandler } from "./scheduled-jobs.service";
 import { emitCampaignProgress } from "./socket.service";
 import { dispatchEvent } from "./webhook-dispatcher.service";
@@ -34,6 +41,116 @@ const scheduledTimers = new Map<string, NodeJS.Timeout>();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export type RecoverSendingResult = {
+  promotedSent: number;
+  indeterminateFailed: number;
+  releasedPending: number;
+};
+
+/**
+ * Recover recipients stuck in status=sending without blindly re-opening Meta submits.
+ * Used by pause interrupt, end-of-loop stranded cleanup, resume, and boot recovery.
+ */
+export async function recoverSendingRecipients(opts?: {
+  campaignId?: string;
+}): Promise<RecoverSendingResult> {
+  const where = {
+    status: "sending" as const,
+    ...(opts?.campaignId ? { campaignId: opts.campaignId } : {}),
+  };
+
+  const rows = await prisma.campaignRecipient.findMany({
+    where,
+    select: {
+      id: true,
+      waMessageId: true,
+      errorMessage: true,
+      sentAt: true,
+      campaignId: true,
+    },
+  });
+
+  const result: RecoverSendingResult = {
+    promotedSent: 0,
+    indeterminateFailed: 0,
+    releasedPending: 0,
+  };
+
+  for (const row of rows) {
+    const action = classifySendingRecipientRecovery(row);
+
+    if (action === "promote_sent") {
+      const updated = await prisma.campaignRecipient.updateMany({
+        where: {
+          id: row.id,
+          status: "sending",
+          waMessageId: { not: null },
+        },
+        data: {
+          status: "sent",
+          errorMessage: null,
+          ...(row.sentAt ? {} : { sentAt: new Date() }),
+        },
+      });
+      if (updated.count === 1) {
+        result.promotedSent += 1;
+        console.log(
+          `[broadcast] recipient=${row.id} recovered: sending→sent (waMessageId persisted)`
+        );
+      }
+      continue;
+    }
+
+    if (action === "indeterminate_fail") {
+      const updated = await prisma.campaignRecipient.updateMany({
+        where: {
+          id: row.id,
+          status: "sending",
+          waMessageId: null,
+        },
+        data: {
+          status: "failed",
+          errorMessage: CAMPAIGN_INDETERMINATE_SUBMIT_ERROR,
+        },
+      });
+      if (updated.count === 1) {
+        result.indeterminateFailed += 1;
+        console.log(
+          `[broadcast] recipient=${row.id} recovered: sending→failed (submit started; skip auto-resend)`
+        );
+      }
+      continue;
+    }
+
+    const updated = await prisma.campaignRecipient.updateMany({
+      where: {
+        id: row.id,
+        status: "sending",
+        waMessageId: null,
+        OR: [
+          { errorMessage: null },
+          { errorMessage: { not: CAMPAIGN_SUBMIT_STARTED_MARKER } },
+        ],
+      },
+      data: {
+        status: "pending",
+        errorMessage: null,
+      },
+    });
+    // Guard: never release a submit-started marker via the OR branch if Prisma
+    // matched an unexpected row — re-check would require another read; the
+    // `not: MARKER` clause excludes the marker value itself.
+    if (updated.count === 1) {
+      result.releasedPending += 1;
+      console.log(
+        `[broadcast] recipient=${row.id} recovered: sending→pending (Meta not started)`
+      );
+    }
+  }
+
+  return result;
 }
 
 export async function getCampaignStats(
@@ -168,12 +285,24 @@ async function processCampaign(campaignId: string): Promise<void> {
         break;
       }
 
-      // Atomic claim — prevents double-send on worker overlap / restart races
+      // Atomic claim — prevents double-send on worker overlap / restart races.
+      // Submit marker is applied in a second step immediately before Meta.
       const claim = await prisma.campaignRecipient.updateMany({
         where: { id: recipient.id, status: "pending" },
-        data: { status: "sending" },
+        data: {
+          status: "sending",
+          errorMessage: null,
+        },
       });
-      if (claim.count === 0) continue;
+      if (claim.count === 0) {
+        console.log(
+          `[broadcast] recipient=${recipient.id} claim skipped (already claimed)`
+        );
+        continue;
+      }
+      console.log(
+        `[broadcast] recipient=${recipient.id} claimed pending→sending`
+      );
 
       if (recipient.contact.optedOut) {
         await prisma.campaignRecipient.update({
@@ -206,7 +335,29 @@ async function processCampaign(campaignId: string): Promise<void> {
         continue;
       }
 
+      let acceptedWaMessageId: string | null = null;
+      let submitMarkerWasPersisted = false;
       try {
+        // Durable evidence that Meta HTTP is about to start / may have started.
+        const marked = await prisma.campaignRecipient.updateMany({
+          where: {
+            id: recipient.id,
+            status: "sending",
+            waMessageId: null,
+          },
+          data: { errorMessage: CAMPAIGN_SUBMIT_STARTED_MARKER },
+        });
+        if (marked.count !== 1) {
+          console.log(
+            `[broadcast] recipient=${recipient.id} submit mark skipped (state changed)`
+          );
+          continue;
+        }
+        submitMarkerWasPersisted = true;
+
+        console.log(
+          `[broadcast] recipient=${recipient.id} Meta template send attempted`
+        );
         const { waMessageId } = await sendTemplateMessage(
           recipient.contact.phone,
           campaign.template.name,
@@ -214,9 +365,13 @@ async function processCampaign(campaignId: string): Promise<void> {
           [],
           campaign.channelId
         );
+        acceptedWaMessageId = waMessageId;
+        console.log(
+          `[broadcast] recipient=${recipient.id} Meta accepted waMessageId=${waMessageId}`
+        );
 
-        await prisma.campaignRecipient.update({
-          where: { id: recipient.id },
+        const persisted = await prisma.campaignRecipient.updateMany({
+          where: { id: recipient.id, status: "sending" },
           data: {
             status: "sent",
             waMessageId,
@@ -224,6 +379,25 @@ async function processCampaign(campaignId: string): Promise<void> {
             errorMessage: null,
           },
         });
+        if (persisted.count !== 1) {
+          // Best-effort heal if status raced; never drop a known Meta id.
+          await prisma.campaignRecipient.updateMany({
+            where: { id: recipient.id, waMessageId: null },
+            data: {
+              status: "sent",
+              waMessageId,
+              sentAt: new Date(),
+              errorMessage: null,
+            },
+          });
+          console.warn(
+            `[broadcast] recipient=${recipient.id} Meta accepted; healed DB sent (initial count=${persisted.count})`
+          );
+        } else {
+          console.log(
+            `[broadcast] recipient=${recipient.id} DB persisted sending→sent`
+          );
+        }
 
         emitCampaignProgress({
           campaignId,
@@ -248,11 +422,87 @@ async function processCampaign(campaignId: string): Promise<void> {
           },
         });
       } catch (error) {
+        const catchAction = classifyPostSubmitCatch({
+          acceptedWaMessageId,
+          submitMarkerWasPersisted,
+        });
+
+        if (catchAction === "force_sent" && acceptedWaMessageId) {
+          // Meta already accepted — persist evidence; do not mark retryable failed.
+          // Only fills waMessageId when still null — never clears an existing id.
+          await prisma.campaignRecipient.updateMany({
+            where: { id: recipient.id, waMessageId: null },
+            data: {
+              status: "sent",
+              waMessageId: acceptedWaMessageId,
+              sentAt: new Date(),
+              errorMessage: null,
+            },
+          });
+          console.error(
+            `[broadcast] recipient=${recipient.id} Meta accepted but post-accept path failed; forced sent persistence`,
+            error instanceof Error ? error.message : error
+          );
+          emitCampaignProgress({
+            campaignId,
+            recipientId: recipient.id,
+            contactId: recipient.contactId,
+            recipientStatus: "sent",
+            waMessageId: acceptedWaMessageId,
+            ...(await getProgress(campaignId)),
+            status: "sending",
+          });
+          continue;
+        }
+
+        if (catchAction === "indeterminate_fail") {
+          // Marker was persisted; Meta result unknown — never retryable.
+          const indeterminateError = CAMPAIGN_INDETERMINATE_SUBMIT_ERROR;
+          await prisma.campaignRecipient.updateMany({
+            where: {
+              id: recipient.id,
+              status: "sending",
+              waMessageId: null,
+            },
+            data: {
+              status: "failed",
+              errorMessage: indeterminateError,
+            },
+          });
+          console.error(
+            `[broadcast] recipient=${recipient.id} indeterminate Meta submit (marker set, no waMessageId); marked NO_AUTO_RETRY`,
+            error instanceof Error ? error.message : error
+          );
+          emitCampaignProgress({
+            campaignId,
+            recipientId: recipient.id,
+            contactId: recipient.contactId,
+            recipientStatus: "failed",
+            error: indeterminateError,
+            ...(await getProgress(campaignId)),
+            status: "sending",
+          });
+          void logTimeline({
+            contactId: recipient.contactId,
+            eventType: TimelineEventType.CAMPAIGN_FAILED,
+            title: "فشل إرسال حملة",
+            description: indeterminateError,
+            actor: actorAutomation("Campaign"),
+            metadata: {
+              campaignId,
+              recipientId: recipient.id,
+              errorMessage: indeterminateError,
+              reason: "indeterminate_submit",
+            },
+          });
+          continue;
+        }
+
         const errorMessage =
           error instanceof Error ? error.message : "Send failed";
 
-        await prisma.campaignRecipient.update({
-          where: { id: recipient.id },
+        await prisma.campaignRecipient.updateMany({
+          where: { id: recipient.id, status: "sending" },
           data: {
             status: "failed",
             errorMessage,
@@ -292,11 +542,10 @@ async function processCampaign(campaignId: string): Promise<void> {
   }
 
   if (interrupted) {
-    // Release any in-flight claims so resume/retry can pick them up
-    await prisma.campaignRecipient.updateMany({
-      where: { campaignId, status: "sending" },
-      data: { status: "pending" },
-    });
+    const recovered = await recoverSendingRecipients({ campaignId });
+    console.log(
+      `[broadcast] campaign=${campaignId} interrupt recovery promoted=${recovered.promotedSent} indeterminate=${recovered.indeterminateFailed} pending=${recovered.releasedPending}`
+    );
     const progress = await getProgress(campaignId);
     const finalStatus = await prisma.campaign.findUnique({
       where: { id: campaignId },
@@ -310,11 +559,11 @@ async function processCampaign(campaignId: string): Promise<void> {
     return;
   }
 
-  const stranded = await prisma.campaignRecipient.updateMany({
-    where: { campaignId, status: "sending" },
-    data: { status: "pending" },
-  });
-  if (stranded.count > 0) {
+  const stranded = await recoverSendingRecipients({ campaignId });
+  if (stranded.releasedPending > 0) {
+    console.log(
+      `[broadcast] campaign=${campaignId} stranded pending re-queue count=${stranded.releasedPending}`
+    );
     enqueueCampaignSend(campaignId);
     return;
   }
@@ -462,17 +711,18 @@ registerJobHandler("campaign.send", async (payload: { campaignId?: string }) => 
 });
 
 /**
- * After restart: release stranded recipient claims and re-queue campaigns
- * left in `sending` so pending recipients continue (idempotent via claim).
+ * After restart: recover stranded recipient claims without blindly re-opening
+ * Meta submits that may already have been accepted.
  */
 export async function resumeInterruptedCampaigns(): Promise<void> {
-  const released = await prisma.campaignRecipient.updateMany({
-    where: { status: "sending" },
-    data: { status: "pending" },
-  });
-  if (released.count > 0) {
+  const recovered = await recoverSendingRecipients();
+  if (
+    recovered.promotedSent > 0 ||
+    recovered.indeterminateFailed > 0 ||
+    recovered.releasedPending > 0
+  ) {
     console.log(
-      `[broadcast] Released ${released.count} stranded recipient claim(s)`
+      `[broadcast] Boot recovery promoted=${recovered.promotedSent} indeterminateFailed=${recovered.indeterminateFailed} releasedPending=${recovered.releasedPending}`
     );
   }
 
@@ -635,6 +885,7 @@ export async function attributeCampaignReply(opts: {
 
 /**
  * Reset failed recipients to pending and resume sending (does not re-send successes).
+ * Excludes indeterminate Meta-submit crashes marked [NO_AUTO_RETRY].
  */
 export async function retryFailedCampaignRecipients(
   campaignId: string
@@ -650,17 +901,37 @@ export async function retryFailedCampaignRecipients(
     throw new Error("Cannot retry a cancelled campaign");
   }
 
-  const result = await prisma.campaignRecipient.updateMany({
+  const failed = await prisma.campaignRecipient.findMany({
     where: { campaignId, status: "failed" },
-    data: {
-      status: "pending",
-      errorMessage: null,
-      waMessageId: null,
-      sentAt: null,
-    },
+    select: { id: true, errorMessage: true },
   });
 
-  if (result.count === 0) {
+  let retried = 0;
+  for (const row of failed) {
+    if (!isAutoRetryableFailedRecipient(row.errorMessage)) {
+      console.log(
+        `[broadcast] recipient=${row.id} skipped retry-failed (no-auto-retry)`
+      );
+      continue;
+    }
+    const updated = await prisma.campaignRecipient.updateMany({
+      where: { id: row.id, status: "failed" },
+      data: {
+        status: "pending",
+        errorMessage: null,
+        waMessageId: null,
+        sentAt: null,
+      },
+    });
+    if (updated.count === 1) {
+      retried += 1;
+      console.log(
+        `[broadcast] recipient=${row.id} retry-failed → pending (intentional)`
+      );
+    }
+  }
+
+  if (retried === 0) {
     return { retried: 0 };
   }
 
@@ -678,5 +949,5 @@ export async function retryFailedCampaignRecipients(
     ...(await getProgress(campaignId)),
   });
 
-  return { retried: result.count };
+  return { retried };
 }

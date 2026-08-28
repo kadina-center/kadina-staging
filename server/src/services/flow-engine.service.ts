@@ -61,6 +61,172 @@ async function sendChannelText(
 
 type FlowWithSteps = Flow & { steps: FlowStep[] };
 
+/** Grace after wait step before treating missing flow.resume job as stale. */
+export const FLOW_WAIT_JOB_GRACE_MS = 2 * 60 * 1000;
+
+/**
+ * Non-wait steps run synchronously; if still "running" after this window
+ * without a pending flow.resume job, treat as crash-stale (not a durable wait).
+ */
+export const FLOW_STALE_NON_WAIT_MS = 10 * 60 * 1000;
+
+/**
+ * Pure: whether a running execution should be recovered (stopped + pointer cleared).
+ * Legitimate durable waits have a pending flow.resume job and are NOT stale.
+ */
+export function isFlowExecutionStale(opts: {
+  currentStepActionType: string | undefined;
+  hasPendingResumeJob: boolean;
+  executionAgeMs: number;
+  waitJobGraceMs?: number;
+  staleNonWaitMs?: number;
+}): boolean {
+  const waitGrace = opts.waitJobGraceMs ?? FLOW_WAIT_JOB_GRACE_MS;
+  const staleNonWait = opts.staleNonWaitMs ?? FLOW_STALE_NON_WAIT_MS;
+
+  if (opts.hasPendingResumeJob) return false;
+
+  if (opts.currentStepActionType === "wait") {
+    return opts.executionAgeMs > waitGrace;
+  }
+
+  return opts.executionAgeMs > staleNonWait;
+}
+
+async function hasPendingFlowResumeJob(executionId: string): Promise<boolean> {
+  const count = await prisma.scheduledJob.count({
+    where: {
+      type: "flow.resume",
+      status: { in: ["pending", "running"] },
+      payloadJson: { contains: executionId },
+    },
+  });
+  return count > 0;
+}
+
+/**
+ * Fix inconsistent / abandoned flow state for a contact.
+ * Safe to call before starting a new flow or reporting active flow info.
+ */
+export async function reconcileContactFlowState(
+  contactId: string
+): Promise<void> {
+  const contact = await prisma.contact.findUnique({ where: { id: contactId } });
+  if (!contact) return;
+
+  const runningExecutions = await prisma.flowExecution.findMany({
+    where: { contactId, status: "running" },
+    orderBy: { startedAt: "asc" },
+  });
+
+  // Multiple running rows — keep only the pointer target (if valid), stop the rest.
+  if (runningExecutions.length > 1) {
+    for (const ex of runningExecutions) {
+      if (ex.id === contact.activeFlowExecutionId) continue;
+      await prisma.flowExecution.update({
+        where: { id: ex.id },
+        data: { status: "stopped", completedAt: new Date() },
+      });
+    }
+  }
+
+  if (!contact.activeFlowExecutionId) {
+    if (runningExecutions.length > 0) {
+      await prisma.flowExecution.updateMany({
+        where: { contactId, status: "running" },
+        data: { status: "stopped", completedAt: new Date() },
+      });
+    }
+    return;
+  }
+
+  const pointed = await prisma.flowExecution.findUnique({
+    where: { id: contact.activeFlowExecutionId },
+  });
+
+  if (!pointed || pointed.status !== "running") {
+    await prisma.contact.update({
+      where: { id: contactId },
+      data: { activeFlowExecutionId: null },
+    });
+    if (runningExecutions.length > 0) {
+      await prisma.flowExecution.updateMany({
+        where: { contactId, status: "running" },
+        data: { status: "stopped", completedAt: new Date() },
+      });
+    }
+    return;
+  }
+
+  const steps = await prisma.flowStep.findMany({
+    where: { flowId: pointed.flowId },
+    orderBy: { order: "asc" },
+  });
+  const currentStep = steps[pointed.currentStep];
+  const hasResumeJob = await hasPendingFlowResumeJob(pointed.id);
+  const ageMs = Date.now() - pointed.startedAt.getTime();
+
+  if (
+    isFlowExecutionStale({
+      currentStepActionType: currentStep?.actionType,
+      hasPendingResumeJob: hasResumeJob,
+      executionAgeMs: ageMs,
+    })
+  ) {
+    console.warn(
+      `[flow-engine] recovering stale execution=${pointed.id} contact=${contactId} step=${currentStep?.actionType ?? "?"}`
+    );
+    await stopFlow(contactId);
+  }
+}
+
+/**
+ * Atomically claim the right to start a flow for this contact (PostgreSQL row lock).
+ * Returns the new execution or null if another flow is already active.
+ */
+async function claimFlowExecutionStart(
+  contactId: string,
+  flowId: string
+): Promise<FlowExecution | null> {
+  try {
+    return await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT 1 FROM "Contact" WHERE id = ${contactId} FOR UPDATE`;
+
+      const locked = await tx.contact.findUnique({ where: { id: contactId } });
+      if (!locked || locked.activeFlowExecutionId) return null;
+
+      const existingRunning = await tx.flowExecution.findFirst({
+        where: { contactId, status: "running" },
+      });
+      if (existingRunning) return null;
+
+      const execution = await tx.flowExecution.create({
+        data: {
+          flowId,
+          contactId,
+          currentStep: 0,
+          status: "running",
+        },
+      });
+
+      const linked = await tx.contact.updateMany({
+        where: { id: contactId, activeFlowExecutionId: null },
+        data: { activeFlowExecutionId: execution.id },
+      });
+      if (linked.count !== 1) {
+        throw new Error("FLOW_CONTACT_CLAIM_LOST");
+      }
+
+      return execution;
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "FLOW_CONTACT_CLAIM_LOST") {
+      return null;
+    }
+    throw error;
+  }
+}
+
 function normalizeText(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -309,7 +475,7 @@ export async function runDefaultAiAgent(
 export async function startFlow(
   flow: FlowWithSteps | Flow,
   contact: Contact
-): Promise<void> {
+): Promise<boolean> {
   const steps =
     "steps" in flow && Array.isArray(flow.steps)
       ? flow.steps
@@ -320,22 +486,18 @@ export async function startFlow(
 
   if (steps.length === 0) {
     console.warn(`[flow-engine] Flow ${flow.id} has no steps — skipped`);
-    return;
+    return false;
   }
 
-  const execution = await prisma.flowExecution.create({
-    data: {
-      flowId: flow.id,
-      contactId: contact.id,
-      currentStep: 0,
-      status: "running",
-    },
-  });
+  await reconcileContactFlowState(contact.id);
 
-  await prisma.contact.update({
-    where: { id: contact.id },
-    data: { activeFlowExecutionId: execution.id },
-  });
+  const execution = await claimFlowExecutionStart(contact.id, flow.id);
+  if (!execution) {
+    console.log(
+      `[flow-engine] start skipped — contact=${contact.id} already has active execution`
+    );
+    return false;
+  }
 
   void logTimeline({
     contactId: contact.id,
@@ -347,6 +509,7 @@ export async function startFlow(
   });
 
   await executeStep(execution);
+  return true;
 }
 
 async function completeExecution(executionId: string, contactId: string) {
@@ -489,6 +652,8 @@ async function runAction(
         },
         previousAssignedToId
       );
+      // Human handoff — stop automation; do not run subsequent steps.
+      await stopFlow(contact.id);
       return;
     }
 
@@ -688,32 +853,20 @@ export async function executeStep(execution: FlowExecution): Promise<void> {
  * Stop any running automation for a contact (human agent takeover).
  */
 export async function stopFlow(contactId: string): Promise<void> {
-  const contact = await prisma.contact.findUnique({
-    where: { id: contactId },
-  });
-  if (!contact?.activeFlowExecutionId) {
-    await prisma.flowExecution.updateMany({
-      where: { contactId, status: "running" },
-      data: { status: "stopped", completedAt: new Date() },
-    });
-    return;
-  }
-
   await prisma.flowExecution.updateMany({
-    where: {
-      id: contact.activeFlowExecutionId,
-      status: "running",
-    },
+    where: { contactId, status: "running" },
     data: { status: "stopped", completedAt: new Date() },
   });
 
-  await prisma.contact.update({
-    where: { id: contactId },
+  await prisma.contact.updateMany({
+    where: { id: contactId, activeFlowExecutionId: { not: null } },
     data: { activeFlowExecutionId: null },
   });
 }
 
 export async function getActiveFlowInfo(contactId: string) {
+  await reconcileContactFlowState(contactId);
+
   const contact = await prisma.contact.findUnique({
     where: { id: contactId },
     select: { activeFlowExecutionId: true },
@@ -755,22 +908,29 @@ export async function maybeStartFlowForInbound(
 ): Promise<void> {
   // Critical rule: never bot-reply on a human-assigned conversation
   if (assignedToId) return;
-  if (contact.activeFlowExecutionId) return;
 
-  const keywordFlow = await matchKeywordFlow(incomingText, contact);
+  await reconcileContactFlowState(contact.id);
+
+  const freshContact = await prisma.contact.findUnique({
+    where: { id: contact.id },
+  });
+  if (!freshContact) return;
+  if (freshContact.activeFlowExecutionId) return;
+
+  const keywordFlow = await matchKeywordFlow(incomingText, freshContact);
   if (keywordFlow) {
-    await startFlow(keywordFlow, contact);
+    await startFlow(keywordFlow, freshContact);
     return;
   }
 
   const aiSettings = await getOrCreateAiSettings();
   if (aiSettings.isActive) {
     try {
-      await runDefaultAiAgent(contact, incomingText);
+      await runDefaultAiAgent(freshContact, incomingText);
     } catch (error) {
       console.error("[flow-engine] default AI agent failed:", error);
-      await stopFlow(contact.id);
-      const conversation = await touchConversation(contact.id);
+      await stopFlow(freshContact.id);
+      const conversation = await touchConversation(freshContact.id);
       await prisma.conversation.update({
         where: { id: conversation.id },
         data: { status: "pending" },
@@ -779,10 +939,10 @@ export async function maybeStartFlowForInbound(
     return;
   }
 
-  const flow = await matchTrigger(incomingText, contact);
+  const flow = await matchTrigger(incomingText, freshContact);
   if (!flow) return;
 
-  await startFlow(flow, contact);
+  await startFlow(flow, freshContact);
 }
 
 /**

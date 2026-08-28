@@ -64,6 +64,63 @@ function userRoom(userId: string): string {
   return `user:${userId}`;
 }
 
+/** Rooms joined after DB-backed auth (mirrors connection handler). */
+export function roomsForAuthenticatedUser(user: {
+  id: string;
+  role: string;
+}): string[] {
+  const rooms = [userRoom(user.id)];
+  if (user.role === "admin") {
+    rooms.push(adminRoom());
+  }
+  return rooms;
+}
+
+/**
+ * Pure filter: which socket ids belong to targetUserId.
+ * Unrelated sockets (other users) are never selected.
+ */
+export function filterSocketsOwnedByUser(
+  sockets: ReadonlyArray<{
+    socketId: string;
+    userId: string | null | undefined;
+  }>,
+  targetUserId: string
+): string[] {
+  if (!targetUserId) return [];
+  return sockets
+    .filter((s) => s.userId === targetUserId)
+    .map((s) => s.socketId);
+}
+
+/**
+ * Disconnect every active socket for a user on this replica
+ * (all tabs/devices). Safe no-op if Socket.IO is not initialized.
+ * Returns how many sockets were disconnected.
+ */
+export function disconnectSocketsForUser(userId: string): number {
+  if (!io || !userId) return 0;
+  const room = io.sockets.adapter.rooms.get(userRoom(userId));
+  if (!room || room.size === 0) return 0;
+
+  const candidates = Array.from(room).map((socketId) => {
+    const sock = io!.sockets.sockets.get(socketId);
+    const user = sock?.data?.user as AuthUser | undefined;
+    return { socketId, userId: user?.id };
+  });
+
+  const toDisconnect = filterSocketsOwnedByUser(candidates, userId);
+
+  let disconnected = 0;
+  for (const socketId of toDisconnect) {
+    const sock = io.sockets.sockets.get(socketId);
+    if (!sock) continue;
+    sock.disconnect(true);
+    disconnected += 1;
+  }
+  return disconnected;
+}
+
 /**
  * Emit to admins + assigned agent only.
  * Unassigned conversations → admins only.
@@ -152,9 +209,8 @@ export function initSocket(httpServer: HttpServer): Server {
 
   io.on("connection", (socket: Socket) => {
     const user = socket.data.user as AuthUser;
-    void socket.join(userRoom(user.id));
-    if (user.role === "admin") {
-      void socket.join(adminRoom());
+    for (const room of roomsForAuthenticatedUser(user)) {
+      void socket.join(room);
     }
     console.log(`[socket] ${user.name} connected: ${socket.id}`);
 

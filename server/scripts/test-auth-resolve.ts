@@ -4,7 +4,7 @@
  */
 import jwt from "jsonwebtoken";
 import { env } from "../src/config/env";
-import { resolveAuthUserFromJwt } from "../src/middleware/auth";
+import { resolveAuthUserFromJwt, signToken } from "../src/middleware/auth";
 
 let failed = 0;
 
@@ -43,9 +43,28 @@ async function testInvalidTokens(): Promise<void> {
   );
 }
 
+function testSignTokenExpiry(): void {
+  const token = signToken({
+    id: "expiry-check-user",
+    email: "expiry@example.com",
+    name: "Expiry Check",
+    role: "agent",
+  });
+  const decoded = jwt.decode(token) as { exp?: number; iat?: number } | null;
+  const lifetimeSec =
+    decoded?.exp != null && decoded?.iat != null
+      ? decoded.exp - decoded.iat
+      : null;
+  assert(
+    lifetimeSec === 24 * 60 * 60,
+    "signToken expiresIn is 24h (86400 seconds)"
+  );
+}
+
 async function main(): Promise<void> {
   console.log("--- auth resolveAuthUserFromJwt tests ---");
   await testInvalidTokens();
+  testSignTokenExpiry();
   if (failed > 0) {
     console.error(`\n${failed} assertion(s) failed`);
     process.exit(1);

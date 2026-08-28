@@ -8,7 +8,7 @@ import { requireAdmin } from "../middleware/auth";
 
 const router = Router();
 
-router.get("/", listKnowledge);
+router.get("/", requireAdmin, listKnowledge);
 router.post("/", requireAdmin, createKnowledge);
 router.delete("/:id", requireAdmin, deleteKnowledge);
 

@@ -63,7 +63,7 @@ export function signToken(user: AuthUser): string {
   return jwt.sign(
     { id: user.id, email: user.email, name: user.name, role: user.role },
     env.JWT_SECRET,
-    { expiresIn: "7d" }
+    { expiresIn: "24h" }
   );
 }
 

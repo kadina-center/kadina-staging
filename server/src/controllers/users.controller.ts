@@ -6,6 +6,7 @@ import {
   AuditEntity,
   logAuditFromRequest,
 } from "../services/audit.service";
+import { disconnectSocketsForUser } from "../services/socket.service";
 
 const userSelect = {
   id: true,
@@ -125,11 +126,22 @@ export async function updateUser(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    const roleChanged = Boolean(data.role && data.role !== existing.role);
+
     const user = await prisma.user.update({
       where: { id },
       data,
       select: userSelect,
     });
+
+    if (roleChanged) {
+      const disconnected = disconnectSocketsForUser(user.id);
+      if (disconnected > 0) {
+        console.log(
+          `[users] role changed ${existing.role}→${user.role}; disconnected ${disconnected} socket(s) for user=${user.id}`
+        );
+      }
+    }
 
     logAuditFromRequest(req, {
       action: AuditAction.UPDATE,
