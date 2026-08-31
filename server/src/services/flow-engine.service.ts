@@ -5,6 +5,10 @@ import {
   generateAiReply,
   getOrCreateAiSettings,
 } from "./ai.service";
+import {
+  claimContactAiLease,
+  releaseContactAiLease,
+} from "./ai-contact-lease";
 import { touchConversation } from "./conversation.service";
 import {
   emitConversationUpdated,
@@ -410,66 +414,79 @@ export async function matchKeywordFlow(
 /**
  * Default AI agent reply path.
  * On low confidence / handoff keywords → pending + stop automation.
+ * Per-contact durable lease prevents concurrent default-AI for the same contact.
  */
 export async function runDefaultAiAgent(
   contact: Contact,
   customerMessage: string
 ): Promise<void> {
-  const history = await prisma.message.findMany({
-    where: { contactId: contact.id },
-    orderBy: { createdAt: "asc" },
-    take: 20,
-  });
-
-  const result = await generateAiReply(customerMessage, history);
-
-  if (result.shouldHandoff) {
-    await stopFlow(contact.id);
-    const conversation = await touchConversation(contact.id);
-    const updated = await prisma.conversation.update({
-      where: { id: conversation.id },
-      data: { status: "pending" },
-      include: { contact: true, assignedTo: true, tags: true },
-    });
-    emitConversationUpdated({
-      ...updated,
-      contact: { ...updated.contact, lastMessage: null },
-    });
-
-    try {
-      const { waMessageId } = await sendChannelText(
-        contact,
-        "شكرًا لك. سأحوّل محادثتك إلى أحد موظفينا للمتابعة."
-      );
-      await persistBotOutbound({
-        contactId: contact.id,
-        phone: contact.phone,
-        name: contact.name,
-        type: "text",
-        content: "شكرًا لك. سأحوّل محادثتك إلى أحد موظفينا للمتابعة.",
-        waMessageId,
-        sentByAi: true,
-        asAi: true,
-      });
-    } catch (error) {
-      console.error("[flow-engine] AI handoff notice failed:", error);
-    }
+  const lease = await claimContactAiLease(contact.id);
+  if (!lease) {
+    console.log(
+      `[flow-engine] default AI skipped — contact=${contact.id} AI lease held`
+    );
     return;
   }
 
-  if (!result.reply) return;
+  try {
+    const history = await prisma.message.findMany({
+      where: { contactId: contact.id },
+      orderBy: { createdAt: "asc" },
+      take: 20,
+    });
 
-  const { waMessageId } = await sendChannelText(contact, result.reply);
-  await persistBotOutbound({
-    contactId: contact.id,
-    phone: contact.phone,
-    name: contact.name,
-    type: "text",
-    content: result.reply,
-    waMessageId,
-    sentByAi: true,
-    asAi: true,
-  });
+    const result = await generateAiReply(customerMessage, history);
+
+    if (result.shouldHandoff) {
+      await stopFlow(contact.id);
+      const conversation = await touchConversation(contact.id);
+      const updated = await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { status: "pending" },
+        include: { contact: true, assignedTo: true, tags: true },
+      });
+      emitConversationUpdated({
+        ...updated,
+        contact: { ...updated.contact, lastMessage: null },
+      });
+
+      try {
+        const { waMessageId } = await sendChannelText(
+          contact,
+          "شكرًا لك. سأحوّل محادثتك إلى أحد موظفينا للمتابعة."
+        );
+        await persistBotOutbound({
+          contactId: contact.id,
+          phone: contact.phone,
+          name: contact.name,
+          type: "text",
+          content: "شكرًا لك. سأحوّل محادثتك إلى أحد موظفينا للمتابعة.",
+          waMessageId,
+          sentByAi: true,
+          asAi: true,
+        });
+      } catch (error) {
+        console.error("[flow-engine] AI handoff notice failed:", error);
+      }
+      return;
+    }
+
+    if (!result.reply) return;
+
+    const { waMessageId } = await sendChannelText(contact, result.reply);
+    await persistBotOutbound({
+      contactId: contact.id,
+      phone: contact.phone,
+      name: contact.name,
+      type: "text",
+      content: result.reply,
+      waMessageId,
+      sentByAi: true,
+      asAi: true,
+    });
+  } finally {
+    await releaseContactAiLease(contact.id, lease.token);
+  }
 }
 
 export async function startFlow(

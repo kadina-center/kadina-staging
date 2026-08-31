@@ -57,6 +57,12 @@ export const env = {
     Number(readEnv("CAMPAIGN_REPLY_WINDOW_HOURS", "24")) || 24,
   ANTHROPIC_API_KEY: readEnv("ANTHROPIC_API_KEY", PLACEHOLDER),
   ANTHROPIC_MODEL: readEnv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+  /**
+   * Per-contact default-AI lease TTL (ms). Must cover Anthropic + Meta send
+   * (Meta HTTP timeout is 30s). Crash recovery: lease expires automatically.
+   */
+  AI_CONTACT_LEASE_MS:
+    Number(readEnv("AI_CONTACT_LEASE_MS", "120000")) || 120000,
   EMBEDDING_PROVIDER: readEnv("EMBEDDING_PROVIDER", "local"),
   OPENAI_API_KEY: readEnv("OPENAI_API_KEY", ""),
   INSTAGRAM_ACCESS_TOKEN: readEnv("INSTAGRAM_ACCESS_TOKEN", PLACEHOLDER),

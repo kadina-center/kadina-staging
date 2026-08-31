@@ -24,6 +24,10 @@ model Contact {
   customNotes           String?
   avatarUrl             String?
   activeFlowExecutionId String?
+  /// Default-AI concurrency lease expiry (null = idle). Crash-safe via TTL.
+  aiLeaseUntil          DateTime?
+  /// Opaque token for the invocation that owns aiLeaseUntil (safe release).
+  aiLeaseToken          String?
   // CRM: clinic-specific fields
   doctor                String?
   treatment             String?
