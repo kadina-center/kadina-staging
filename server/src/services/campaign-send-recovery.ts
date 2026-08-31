@@ -70,3 +70,27 @@ export function classifyPostSubmitCatch(opts: {
   if (opts.submitMarkerWasPersisted) return "indeterminate_fail";
   return "retryable_fail";
 }
+
+/** Pure: enqueue vs defer vs skip when a campaign already has a worker/slot. */
+export function classifyCampaignEnqueue(opts: {
+  campaignId: string;
+  activeIds: ReadonlySet<string>;
+  queuedIds: ReadonlyArray<string>;
+}): "enqueue" | "defer" | "skip" {
+  if (opts.queuedIds.includes(opts.campaignId)) return "skip";
+  if (opts.activeIds.has(opts.campaignId)) return "defer";
+  return "enqueue";
+}
+
+/**
+ * Pure: after stranded recovery, whether the campaign may complete.
+ * Never complete while pending or sending recipients remain.
+ */
+export function decideCampaignEndAfterRecovery(counts: {
+  pending: number;
+  sending: number;
+}): "requeue_pending" | "leave_sending" | "complete" {
+  if (counts.pending > 0) return "requeue_pending";
+  if (counts.sending > 0) return "leave_sending";
+  return "complete";
+}

@@ -10,8 +10,10 @@ import {
 import {
   CAMPAIGN_INDETERMINATE_SUBMIT_ERROR,
   CAMPAIGN_SUBMIT_STARTED_MARKER,
+  classifyCampaignEnqueue,
   classifyPostSubmitCatch,
   classifySendingRecipientRecovery,
+  decideCampaignEndAfterRecovery,
   isAutoRetryableFailedRecipient,
 } from "./campaign-send-recovery";
 import { enqueueScheduledJob, registerJobHandler } from "./scheduled-jobs.service";
@@ -36,6 +38,11 @@ type QueueJob = {
 const queue: QueueJob[] = [];
 let processing = false;
 const activeCampaignIds = new Set<string>();
+/**
+ * Campaigns that need another processCampaign pass after the current run
+ * releases activeCampaignIds (stranded pending recovery must not no-op).
+ */
+const pendingRequeue = new Set<string>();
 /** Soft in-process reminder only — persistence is ScheduledJob. */
 const scheduledTimers = new Map<string, NodeJS.Timeout>();
 
@@ -560,11 +567,40 @@ async function processCampaign(campaignId: string): Promise<void> {
   }
 
   const stranded = await recoverSendingRecipients({ campaignId });
-  if (stranded.releasedPending > 0) {
+  if (
+    stranded.releasedPending > 0 ||
+    stranded.promotedSent > 0 ||
+    stranded.indeterminateFailed > 0
+  ) {
     console.log(
-      `[broadcast] campaign=${campaignId} stranded pending re-queue count=${stranded.releasedPending}`
+      `[broadcast] campaign=${campaignId} stranded recovery promoted=${stranded.promotedSent} indeterminate=${stranded.indeterminateFailed} pending=${stranded.releasedPending}`
+    );
+  }
+
+  const pendingLeft = await prisma.campaignRecipient.count({
+    where: { campaignId, status: "pending" },
+  });
+  const sendingLeft = await prisma.campaignRecipient.count({
+    where: { campaignId, status: "sending" },
+  });
+  const endDecision = decideCampaignEndAfterRecovery({
+    pending: pendingLeft,
+    sending: sendingLeft,
+  });
+
+  if (endDecision === "requeue_pending") {
+    console.log(
+      `[broadcast] campaign=${campaignId} not complete; re-queue pending=${pendingLeft}`
     );
     enqueueCampaignSend(campaignId);
+    return;
+  }
+
+  if (endDecision === "leave_sending") {
+    // Do not false-complete; leave status=sending for a later pass / boot recovery.
+    console.warn(
+      `[broadcast] campaign=${campaignId} not complete; ${sendingLeft} recipient(s) still sending after recovery`
+    );
     return;
   }
 
@@ -619,6 +655,11 @@ async function drainQueue(): Promise<void> {
         });
       } finally {
         activeCampaignIds.delete(job.campaignId);
+        if (pendingRequeue.has(job.campaignId)) {
+          pendingRequeue.delete(job.campaignId);
+          // Current slot released — schedule a follow-up pass (no concurrent worker).
+          enqueueCampaignSend(job.campaignId);
+        }
       }
     }
   } finally {
@@ -627,8 +668,22 @@ async function drainQueue(): Promise<void> {
 }
 
 export function enqueueCampaignSend(campaignId: string): void {
-  if (activeCampaignIds.has(campaignId)) return;
-  if (queue.some((j) => j.campaignId === campaignId)) return;
+  const decision = classifyCampaignEnqueue({
+    campaignId,
+    activeIds: activeCampaignIds,
+    queuedIds: queue.map((j) => j.campaignId),
+  });
+
+  if (decision === "skip") return;
+
+  if (decision === "defer") {
+    // Already running in this process — run again after activeCampaignIds clears.
+    pendingRequeue.add(campaignId);
+    console.log(
+      `[broadcast] campaign=${campaignId} re-queue deferred until current run finishes`
+    );
+    return;
+  }
 
   activeCampaignIds.add(campaignId);
   queue.push({ campaignId });

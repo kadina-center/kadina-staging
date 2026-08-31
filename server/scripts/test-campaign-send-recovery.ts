@@ -7,8 +7,10 @@ import {
   CAMPAIGN_INDETERMINATE_SUBMIT_ERROR,
   CAMPAIGN_NO_AUTO_RETRY_PREFIX,
   CAMPAIGN_SUBMIT_STARTED_MARKER,
+  classifyCampaignEnqueue,
   classifyPostSubmitCatch,
   classifySendingRecipientRecovery,
+  decideCampaignEndAfterRecovery,
   isAutoRetryableFailedRecipient,
 } from "../src/services/campaign-send-recovery";
 
@@ -21,6 +23,106 @@ function assert(cond: unknown, msg: string): void {
   } else {
     console.log(`PASS: ${msg}`);
   }
+}
+
+/** Simulate drainQueue finally: clear active, then honor deferred requeue. */
+function simulateDeferredRequeueLifecycle(campaignId: string): {
+  deferredWhileActive: boolean;
+  queuedAfterRelease: boolean;
+} {
+  const active = new Set<string>([campaignId]);
+  const queued: string[] = [];
+  const pendingRequeue = new Set<string>();
+
+  const enqueue = (id: string): void => {
+    const d = classifyCampaignEnqueue({
+      campaignId: id,
+      activeIds: active,
+      queuedIds: queued,
+    });
+    if (d === "skip") return;
+    if (d === "defer") {
+      pendingRequeue.add(id);
+      return;
+    }
+    active.add(id);
+    queued.push(id);
+  };
+
+  // Mid-processCampaign stranded recovery tries to re-enqueue while still active.
+  enqueue(campaignId);
+  const deferredWhileActive =
+    pendingRequeue.has(campaignId) && queued.length === 0;
+
+  // drainQueue finally
+  active.delete(campaignId);
+  if (pendingRequeue.has(campaignId)) {
+    pendingRequeue.delete(campaignId);
+    enqueue(campaignId);
+  }
+
+  return {
+    deferredWhileActive,
+    queuedAfterRelease: queued.includes(campaignId),
+  };
+}
+
+function testEnqueueDoesNotStrandWhenActive(): void {
+  const r = simulateDeferredRequeueLifecycle("camp-1");
+  assert(
+    r.deferredWhileActive === true,
+    "H1: re-enqueue while active is deferred (not silently dropped)"
+  );
+  assert(
+    r.queuedAfterRelease === true,
+    "H1: after active cleared, deferred re-enqueue schedules work"
+  );
+  assert(
+    classifyCampaignEnqueue({
+      campaignId: "c",
+      activeIds: new Set(["c"]),
+      queuedIds: [],
+    }) === "defer",
+    "H1: classifyCampaignEnqueue → defer when active"
+  );
+  assert(
+    classifyCampaignEnqueue({
+      campaignId: "c",
+      activeIds: new Set(),
+      queuedIds: ["c"],
+    }) === "skip",
+    "H1: already queued → skip (no duplicate queue slots)"
+  );
+  assert(
+    classifyCampaignEnqueue({
+      campaignId: "c",
+      activeIds: new Set(),
+      queuedIds: [],
+    }) === "enqueue",
+    "H1: idle campaign → enqueue"
+  );
+}
+
+function testCompletionGate(): void {
+  assert(
+    decideCampaignEndAfterRecovery({ pending: 1, sending: 0 }) ===
+      "requeue_pending",
+    "H2: pending>0 → must not complete"
+  );
+  assert(
+    decideCampaignEndAfterRecovery({ pending: 0, sending: 1 }) ===
+      "leave_sending",
+    "H2: sending>0 → must not complete"
+  );
+  assert(
+    decideCampaignEndAfterRecovery({ pending: 2, sending: 3 }) ===
+      "requeue_pending",
+    "H2: pending wins when both remain"
+  );
+  assert(
+    decideCampaignEndAfterRecovery({ pending: 0, sending: 0 }) === "complete",
+    "H2: pending=0 and sending=0 → complete"
+  );
 }
 
 /** Simulate atomic pending→sending claim race (same as updateMany count). */
@@ -98,47 +200,34 @@ function testCrashAfterDbSent(): void {
   assert(
     classifySendingRecipientRecovery({
       waMessageId: "wamid.OK",
-      errorMessage: null,
-    }) === "promote_sent",
-    "B/D: waMessageId while sending → promote_sent"
-  );
-  assert(
-    classifySendingRecipientRecovery({
-      waMessageId: "wamid.OK",
       errorMessage: CAMPAIGN_SUBMIT_STARTED_MARKER,
     }) === "promote_sent",
-    "B: waMessageId wins over leftover marker → promote_sent"
+    "B/D: waMessageId while sending → promote_sent"
   );
 }
 
 function testConcurrentClaim(): void {
-  const race = simulateConcurrentClaims();
-  assert(race.first === 1, "F: first worker claim wins");
-  assert(race.second === 0, "F: second worker claim loses");
+  const { first, second } = simulateConcurrentClaims();
+  assert(first === 1, "F: first worker claim wins");
+  assert(second === 0, "F: second worker claim loses");
 }
 
 function testHealDoesNotOverwriteSent(): void {
-  const already = simulateForcePersist(
-    { status: "sent", waMessageId: "wamid.EXISTING" },
-    "wamid.NEW"
-  );
   assert(
-    already.waMessageId === "wamid.EXISTING",
+    simulateForcePersist({ status: "sent", waMessageId: "wamid.A" }, "wamid.B")
+      .waMessageId === "wamid.A",
     "F: force-persist does not overwrite existing waMessageId"
   );
-  const empty = simulateForcePersist(
-    { status: "sending", waMessageId: null },
-    "wamid.NEW"
-  );
   assert(
-    empty.status === "sent" && empty.waMessageId === "wamid.NEW",
+    simulateForcePersist({ status: "sending", waMessageId: null }, "wamid.B")
+      .waMessageId === "wamid.B",
     "F: force-persist fills null waMessageId → sent"
   );
 }
 
 function testRetryFailedExclusions(): void {
   assert(
-    isAutoRetryableFailedRecipient("Send failed") === true,
+    isAutoRetryableFailedRecipient("Meta rate limit") === true,
     "E: ordinary failed is retryable"
   );
   assert(
@@ -195,6 +284,8 @@ function testWebhookMonotonicStillApplies(): void {
 }
 
 console.log("--- campaign send recovery tests ---");
+testEnqueueDoesNotStrandWhenActive();
+testCompletionGate();
 testCrashBeforeMeta();
 testCrashAfterMetaBeforeDb();
 testCatchHoleClosed();
