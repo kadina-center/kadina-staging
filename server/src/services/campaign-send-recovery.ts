@@ -94,3 +94,35 @@ export function decideCampaignEndAfterRecovery(counts: {
   if (counts.sending > 0) return "leave_sending";
   return "complete";
 }
+
+/**
+ * Final pre-Meta gate: only start a NEW Meta HTTP call while campaign is sending.
+ * Cancellation/pause after this check may still race the in-flight HTTP (unavoidable).
+ */
+export function shouldStartMetaSend(
+  campaignStatus: string | null | undefined
+): boolean {
+  return campaignStatus === "sending";
+}
+
+/**
+ * When the pre-Meta gate aborts, Meta was never invoked — do not leave an
+ * indeterminate submit marker. Cancelled campaigns cancel the row; otherwise
+ * release back to pending for pause/resume or later recovery.
+ */
+export function classifyPreMetaAbort(
+  campaignStatus: string | null | undefined
+): "cancel_recipient" | "release_pending" {
+  if (campaignStatus === "cancelled") return "cancel_recipient";
+  return "release_pending";
+}
+
+/**
+ * Heal after Meta accepted: only fill waMessageId when still null.
+ * May overwrite cancelled/failed status to sent — preserves delivery truth.
+ */
+export function shouldHealAcceptedWaMessageId(
+  existingWaMessageId: string | null | undefined
+): boolean {
+  return existingWaMessageId == null;
+}

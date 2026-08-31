@@ -12,9 +12,11 @@ import {
   CAMPAIGN_SUBMIT_STARTED_MARKER,
   classifyCampaignEnqueue,
   classifyPostSubmitCatch,
+  classifyPreMetaAbort,
   classifySendingRecipientRecovery,
   decideCampaignEndAfterRecovery,
   isAutoRetryableFailedRecipient,
+  shouldStartMetaSend,
 } from "./campaign-send-recovery";
 import { enqueueScheduledJob, registerJobHandler } from "./scheduled-jobs.service";
 import { emitCampaignProgress } from "./socket.service";
@@ -361,6 +363,48 @@ async function processCampaign(campaignId: string): Promise<void> {
           continue;
         }
         submitMarkerWasPersisted = true;
+
+        // Final TOCTOU gate: do not begin a NEW Meta HTTP after cancel/pause won.
+        const preMeta = await prisma.campaign.findUnique({
+          where: { id: campaignId },
+          select: { status: true },
+        });
+        if (!shouldStartMetaSend(preMeta?.status)) {
+          const abort = classifyPreMetaAbort(preMeta?.status);
+          if (abort === "cancel_recipient") {
+            await prisma.campaignRecipient.updateMany({
+              where: {
+                id: recipient.id,
+                status: "sending",
+                waMessageId: null,
+              },
+              data: {
+                status: "cancelled",
+                errorMessage: "Campaign cancelled",
+              },
+            });
+            console.log(
+              `[broadcast] recipient=${recipient.id} pre-Meta gate aborted (campaign cancelled); Meta not called`
+            );
+          } else {
+            // Meta never started — safe to re-open for pause/resume / recovery.
+            await prisma.campaignRecipient.updateMany({
+              where: {
+                id: recipient.id,
+                status: "sending",
+                waMessageId: null,
+              },
+              data: {
+                status: "pending",
+                errorMessage: null,
+              },
+            });
+            console.log(
+              `[broadcast] recipient=${recipient.id} pre-Meta gate aborted (campaign status=${preMeta?.status ?? "missing"}); released pending, Meta not called`
+            );
+          }
+          continue;
+        }
 
         console.log(
           `[broadcast] recipient=${recipient.id} Meta template send attempted`

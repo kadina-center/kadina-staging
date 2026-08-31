@@ -9,9 +9,12 @@ import {
   CAMPAIGN_SUBMIT_STARTED_MARKER,
   classifyCampaignEnqueue,
   classifyPostSubmitCatch,
+  classifyPreMetaAbort,
   classifySendingRecipientRecovery,
   decideCampaignEndAfterRecovery,
   isAutoRetryableFailedRecipient,
+  shouldHealAcceptedWaMessageId,
+  shouldStartMetaSend,
 } from "../src/services/campaign-send-recovery";
 
 let failed = 0;
@@ -122,6 +125,56 @@ function testCompletionGate(): void {
   assert(
     decideCampaignEndAfterRecovery({ pending: 0, sending: 0 }) === "complete",
     "H2: pending=0 and sending=0 → complete"
+  );
+}
+
+function testPreMetaCancellationGate(): void {
+  assert(
+    shouldStartMetaSend("sending") === true,
+    "H6: campaign sending → Meta send allowed"
+  );
+  assert(
+    shouldStartMetaSend("cancelled") === false,
+    "H6: campaign cancelled before final gate → Meta NOT called"
+  );
+  assert(
+    shouldStartMetaSend("completed") === false,
+    "H6: campaign completed before final gate → Meta NOT called"
+  );
+  assert(
+    shouldStartMetaSend("paused") === false,
+    "H6: campaign paused before final gate → Meta NOT called"
+  );
+  assert(
+    classifyPreMetaAbort("cancelled") === "cancel_recipient",
+    "H6: abort on cancelled → cancel recipient (Meta never started)"
+  );
+  assert(
+    classifyPreMetaAbort("paused") === "release_pending",
+    "H6: abort on paused → release pending (safe; Meta never started)"
+  );
+  assert(
+    classifyPreMetaAbort("completed") === "release_pending",
+    "H6: abort on completed → release pending"
+  );
+  // In-flight after gate: Meta may succeed; heal must keep real waMessageId.
+  assert(
+    shouldHealAcceptedWaMessageId(null) === true,
+    "H6: in-flight Meta success with null id → heal allowed"
+  );
+  assert(
+    shouldHealAcceptedWaMessageId("wamid.EXISTING") === false,
+    "H6: never erase/overwrite existing waMessageId"
+  );
+  // Boot recovery only requeues status=sending (mirrors resumeInterruptedCampaigns).
+  const bootWouldRequeue = (status: string) => status === "sending";
+  assert(
+    bootWouldRequeue("cancelled") === false,
+    "H6: cancelled campaigns are not boot-requeued"
+  );
+  assert(
+    bootWouldRequeue("sending") === true,
+    "H6: sending campaigns remain boot-requeue eligible"
   );
 }
 
@@ -286,6 +339,7 @@ function testWebhookMonotonicStillApplies(): void {
 console.log("--- campaign send recovery tests ---");
 testEnqueueDoesNotStrandWhenActive();
 testCompletionGate();
+testPreMetaCancellationGate();
 testCrashBeforeMeta();
 testCrashAfterMetaBeforeDb();
 testCatchHoleClosed();
